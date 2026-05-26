@@ -22,7 +22,7 @@ import {
   Trash2
 } from 'lucide-react';
 import { dbService, generateAppId, Product, Inventory, InventoryItem } from '@/lib/db';
-import { Html5QrcodeScanner } from 'html5-qrcode';
+import { Html5QrcodeScanner, Html5Qrcode } from 'html5-qrcode';
 
 // --- Helpers ---
 const formatDate = (dateStr: string) => {
@@ -502,21 +502,48 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
     }
   }, [selectedInventory]);
 
-  useEffect(() => {
-    let scanner: Html5QrcodeScanner | null = null;
-    if (scanActive) {
-      scanner = new Html5QrcodeScanner("reader", { fps: 10, qrbox: { width: 250, height: 150 } }, false);
-      scanner.render((decodedText) => {
-        setBarcode(decodedText);
-        handleSearch(decodedText);
+  const scannerRef = React.useRef<Html5Qrcode | null>(null);
+  const isScanningRef = React.useRef<boolean>(false);
+
+  const readerRef = useCallback((node: HTMLDivElement | null) => {
+    if (node) {
+      const html5QrCode = new Html5Qrcode(node.id);
+      scannerRef.current = html5QrCode;
+
+      html5QrCode.start(
+        { facingMode: "environment" },
+        {
+          fps: 10,
+          qrbox: { width: 250, height: 150 },
+        },
+        (decodedText) => {
+          setBarcode(decodedText);
+          handleSearch(decodedText);
+          setScanActive(false);
+        },
+        () => {
+          // Ignore parsing errors
+        }
+      ).then(() => {
+        isScanningRef.current = true;
+      }).catch((err) => {
+        console.error("Erro ao iniciar câmera:", err);
+        addToast("Erro ao iniciar câmera. Verifique as permissões.", "error", err.message || String(err));
         setScanActive(false);
-        scanner?.clear();
-      }, (error) => {});
+      });
+    } else {
+      if (scannerRef.current) {
+        const instance = scannerRef.current;
+        scannerRef.current = null;
+        if (isScanningRef.current) {
+          isScanningRef.current = false;
+          instance.stop().catch((err: any) => {
+            console.warn("Erro ao parar câmera:", err);
+          });
+        }
+      }
     }
-    return () => {
-      scanner?.clear();
-    };
-  }, [scanActive, handleSearch]);
+  }, [handleSearch, addToast]);
 
   const handleSaveItem = async () => {
     if (!foundedProduct || !selectedInventory || !quantity) return;
@@ -603,7 +630,7 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
           {scanActive && (
             <div className="p-4 bg-slate-100">
               <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}>
-                 <div id="reader" className="w-full overflow-hidden bg-slate-900 border-2 border-blue-500"></div>
+                 <div id="reader" ref={readerRef} className="w-full overflow-hidden bg-slate-900 border-2 border-blue-500 rounded-3xl"></div>
               </motion.div>
             </div>
           )}
