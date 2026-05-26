@@ -503,6 +503,7 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
   }, [selectedInventory]);
 
   const [cameras, setCameras] = useState<Array<{ id: string; label: string }>>([]);
+  const [camerasLoaded, setCamerasLoaded] = useState<boolean>(false);
   const [selectedCameraId, setSelectedCameraId] = useState<string>('environment');
 
   const scannerRef = React.useRef<Html5Qrcode | null>(null);
@@ -511,7 +512,11 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
   // Fetch cameras list when scanner is active
   useEffect(() => {
     if (!scanActive) {
-      return;
+      const t = setTimeout(() => {
+        setCamerasLoaded(false);
+        setCameras([]);
+      }, 0);
+      return () => clearTimeout(t);
     }
 
     let active = true;
@@ -522,9 +527,13 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
         if (devices && devices.length > 0) {
           setCameras(devices);
         }
+        setCamerasLoaded(true);
       })
       .catch((err) => {
         console.warn("Erro ao listar câmeras:", err);
+        if (active) {
+          setCamerasLoaded(true);
+        }
       });
 
     return () => {
@@ -532,9 +541,9 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
     };
   }, [scanActive]);
 
-  // Start scanner when scanActive and selectedCameraId are ready
+  // Start scanner when scanActive, selectedCameraId, and camerasLoaded are ready
   useEffect(() => {
-    if (!scanActive || !selectedCameraId) {
+    if (!scanActive || !selectedCameraId || !camerasLoaded) {
       return;
     }
 
@@ -610,7 +619,7 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
         });
       }
     };
-  }, [scanActive, selectedCameraId, handleSearch, addToast]);
+  }, [scanActive, selectedCameraId, camerasLoaded, handleSearch, addToast]);
 
   const handleSaveItem = async () => {
     if (!foundedProduct || !selectedInventory || !quantity) return;
@@ -696,28 +705,37 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
 
           {scanActive && (
             <div className="p-4 bg-slate-100 flex flex-col gap-3">
-              {cameras.length > 0 && (
-                <div className="flex flex-col bg-white p-3 rounded-2xl border border-slate-200">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 block">
-                    Selecionar Câmera
-                  </label>
-                  <select
-                    className="w-full text-xs font-bold p-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-blue-500 text-slate-800"
-                    value={selectedCameraId}
-                    onChange={(e) => setSelectedCameraId(e.target.value)}
-                  >
-                    <option value="environment">Câmera Traseira Padrão (Recomendada)</option>
-                    {cameras.map((cam) => (
-                      <option key={cam.id} value={cam.id}>
-                        {cam.label || `Câmera (${cam.id.slice(0, 8)}...)`}
-                      </option>
-                    ))}
-                  </select>
+              {!camerasLoaded ? (
+                <div className="flex flex-col items-center justify-center py-8 bg-white rounded-3xl border border-slate-200 gap-3">
+                  <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none">Acessando câmeras...</p>
                 </div>
+              ) : (
+                <>
+                  {cameras.length > 0 && (
+                    <div className="flex flex-col bg-white p-3 rounded-2xl border border-slate-200">
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 block">
+                        Selecionar Câmera
+                      </label>
+                      <select
+                        className="w-full text-xs font-bold p-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-blue-500 text-slate-800"
+                        value={selectedCameraId}
+                        onChange={(e) => setSelectedCameraId(e.target.value)}
+                      >
+                        <option value="environment">Câmera Traseira Padrão (Recomendada)</option>
+                        {cameras.map((cam) => (
+                          <option key={cam.id} value={cam.id}>
+                            {cam.label || `Câmera (${cam.id.slice(0, 8)}...)`}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}>
+                     <div id="reader" className="w-full overflow-hidden bg-slate-900 border-2 border-blue-500 rounded-3xl"></div>
+                  </motion.div>
+                </>
               )}
-              <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}>
-                 <div id="reader" className="w-full overflow-hidden bg-slate-900 border-2 border-blue-500 rounded-3xl"></div>
-              </motion.div>
               <button
                 type="button"
                 onClick={() => setScanActive(false)}
