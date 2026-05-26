@@ -1,0 +1,6 @@
+{
+  "name": "Controle de Estoque Mobile", 
+  "description": "Aplicativo PWA para contagem de estoque com suporte offline e sincronização MySQL.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
