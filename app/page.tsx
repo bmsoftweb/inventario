@@ -502,48 +502,121 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
     }
   }, [selectedInventory]);
 
+  const [cameras, setCameras] = useState<Array<{ id: string; label: string }>>([]);
+  const [selectedCameraId, setSelectedCameraId] = useState<string>('');
+
   const scannerRef = React.useRef<Html5Qrcode | null>(null);
   const isScanningRef = React.useRef<boolean>(false);
 
-  const readerRef = useCallback((node: HTMLDivElement | null) => {
-    if (node) {
-      const html5QrCode = new Html5Qrcode(node.id);
-      scannerRef.current = html5QrCode;
+  // Fetch cameras list when scanner is active
+  useEffect(() => {
+    if (!scanActive) {
+      return;
+    }
 
-      html5QrCode.start(
-        { facingMode: "environment" },
-        {
-          fps: 10,
-          qrbox: { width: 250, height: 150 },
-        },
-        (decodedText) => {
-          setBarcode(decodedText);
-          handleSearch(decodedText);
-          setScanActive(false);
-        },
-        () => {
-          // Ignore parsing errors
+    let active = true;
+
+    Html5Qrcode.getCameras()
+      .then((devices) => {
+        if (!active) return;
+        if (devices && devices.length > 0) {
+          setCameras(devices);
+          
+          // Check if our currently selected camera is still in the device list
+          const hasSelected = devices.some(d => d.id === selectedCameraId);
+          if (!hasSelected) {
+            // Try to find a back camera
+            const backCamera = devices.find(d => 
+              d.label.toLowerCase().includes('back') || 
+              d.label.toLowerCase().includes('traseira') || 
+              d.label.toLowerCase().includes('traseiro') || 
+              d.label.toLowerCase().includes('environment') ||
+              d.label.toLowerCase().includes('rear') ||
+              d.label.toLowerCase().includes('0')
+            );
+            setSelectedCameraId(backCamera ? backCamera.id : devices[0].id);
+          }
+        } else {
+          addToast("Nenhuma câmera encontrada.", "error");
         }
-      ).then(() => {
-        isScanningRef.current = true;
-      }).catch((err) => {
-        console.error("Erro ao iniciar câmera:", err);
-        addToast("Erro ao iniciar câmera. Verifique as permissões.", "error", err.message || String(err));
-        setScanActive(false);
+      })
+      .catch((err) => {
+        if (!active) return;
+        console.error("Erro ao listar câmeras:", err);
+        addToast("Não foi possível acessar a lista de câmeras.", "error", err.message || String(err));
       });
-    } else {
-      if (scannerRef.current) {
-        const instance = scannerRef.current;
-        scannerRef.current = null;
-        if (isScanningRef.current) {
-          isScanningRef.current = false;
-          instance.stop().catch((err: any) => {
-            console.warn("Erro ao parar câmera:", err);
-          });
+
+    return () => {
+      active = false;
+    };
+  }, [scanActive, addToast, selectedCameraId]);
+
+  // Start scanner when scanActive and selectedCameraId are ready
+  useEffect(() => {
+    if (!scanActive || !selectedCameraId) {
+      return;
+    }
+
+    let active = true;
+    let html5QrCode: Html5Qrcode | null = null;
+
+    const startCamera = async () => {
+      try {
+        const el = document.getElementById("reader");
+        if (!el) {
+          if (active) {
+            setTimeout(startCamera, 50);
+          }
+          return;
+        }
+
+        html5QrCode = new Html5Qrcode("reader");
+        scannerRef.current = html5QrCode;
+
+        await html5QrCode.start(
+          selectedCameraId,
+          {
+            fps: 10,
+            qrbox: { width: 250, height: 150 },
+          },
+          (decodedText) => {
+            if (active) {
+              setBarcode(decodedText);
+              handleSearch(decodedText);
+              setScanActive(false);
+            }
+          },
+          () => {
+            // Ignore parsing/scanning frame errors
+          }
+        );
+
+        if (active) {
+          isScanningRef.current = true;
+        } else {
+          html5QrCode.stop().catch(() => {});
+        }
+      } catch (err: any) {
+        if (active) {
+          console.error("Erro ao iniciar câmera:", err);
+          addToast("Erro ao iniciar câmera selecionada.", "error", err.message || String(err));
+          setScanActive(false);
         }
       }
-    }
-  }, [handleSearch, addToast]);
+    };
+
+    startCamera();
+
+    return () => {
+      active = false;
+      if (html5QrCode && isScanningRef.current) {
+        isScanningRef.current = false;
+        html5QrCode.stop().catch((err) => {
+          console.warn("Erro ao parar câmera:", err);
+        });
+      }
+    };
+  }, [scanActive, selectedCameraId, handleSearch, addToast]);
 
   const handleSaveItem = async () => {
     if (!foundedProduct || !selectedInventory || !quantity) return;
@@ -628,10 +701,35 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
           </div>
 
           {scanActive && (
-            <div className="p-4 bg-slate-100">
+            <div className="p-4 bg-slate-100 flex flex-col gap-3">
+              {cameras.length > 1 && (
+                <div className="flex flex-col bg-white p-3 rounded-2xl border border-slate-200">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 block">
+                    Selecionar Câmera
+                  </label>
+                  <select
+                    className="w-full text-xs font-bold p-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-blue-500 text-slate-800"
+                    value={selectedCameraId}
+                    onChange={(e) => setSelectedCameraId(e.target.value)}
+                  >
+                    {cameras.map((cam) => (
+                      <option key={cam.id} value={cam.id}>
+                        {cam.label || `Câmera (${cam.id.slice(0, 8)}...)`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}>
-                 <div id="reader" ref={readerRef} className="w-full overflow-hidden bg-slate-900 border-2 border-blue-500 rounded-3xl"></div>
+                 <div id="reader" className="w-full overflow-hidden bg-slate-900 border-2 border-blue-500 rounded-3xl"></div>
               </motion.div>
+              <button
+                type="button"
+                onClick={() => setScanActive(false)}
+                className="w-full py-3.5 bg-red-500 text-white font-black uppercase tracking-widest text-[10px] rounded-xl hover:bg-red-600 transition-colors shadow-lg shadow-red-100"
+              >
+                Fechar Câmera
+              </button>
             </div>
           )}
 
