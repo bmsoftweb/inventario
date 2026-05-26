@@ -503,7 +503,7 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
   }, [selectedInventory]);
 
   const [cameras, setCameras] = useState<Array<{ id: string; label: string }>>([]);
-  const [selectedCameraId, setSelectedCameraId] = useState<string>('');
+  const [selectedCameraId, setSelectedCameraId] = useState<string>('environment');
 
   const scannerRef = React.useRef<Html5Qrcode | null>(null);
   const isScanningRef = React.useRef<boolean>(false);
@@ -521,35 +521,16 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
         if (!active) return;
         if (devices && devices.length > 0) {
           setCameras(devices);
-          
-          // Check if our currently selected camera is still in the device list
-          const hasSelected = devices.some(d => d.id === selectedCameraId);
-          if (!hasSelected) {
-            // Try to find a back camera
-            const backCamera = devices.find(d => 
-              d.label.toLowerCase().includes('back') || 
-              d.label.toLowerCase().includes('traseira') || 
-              d.label.toLowerCase().includes('traseiro') || 
-              d.label.toLowerCase().includes('environment') ||
-              d.label.toLowerCase().includes('rear') ||
-              d.label.toLowerCase().includes('0')
-            );
-            setSelectedCameraId(backCamera ? backCamera.id : devices[0].id);
-          }
-        } else {
-          addToast("Nenhuma câmera encontrada.", "error");
         }
       })
       .catch((err) => {
-        if (!active) return;
-        console.error("Erro ao listar câmeras:", err);
-        addToast("Não foi possível acessar a lista de câmeras.", "error", err.message || String(err));
+        console.warn("Erro ao listar câmeras:", err);
       });
 
     return () => {
       active = false;
     };
-  }, [scanActive, addToast, selectedCameraId]);
+  }, [scanActive]);
 
   // Start scanner when scanActive and selectedCameraId are ready
   useEffect(() => {
@@ -573,8 +554,12 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
         html5QrCode = new Html5Qrcode("reader");
         scannerRef.current = html5QrCode;
 
+        const cameraConfig = selectedCameraId === 'environment'
+          ? { facingMode: "environment" }
+          : selectedCameraId;
+
         await html5QrCode.start(
-          selectedCameraId,
+          cameraConfig,
           {
             fps: 10,
             qrbox: { width: 250, height: 150 },
@@ -599,8 +584,17 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
       } catch (err: any) {
         if (active) {
           console.error("Erro ao iniciar câmera:", err);
-          addToast("Erro ao iniciar câmera selecionada.", "error", err.message || String(err));
-          setScanActive(false);
+          const errMsg = err.message || String(err);
+          let message = "Erro ao iniciar câmera selecionada.";
+          if (errMsg.toUpperCase().includes("NOTREADABLE") || errMsg.toUpperCase().includes("SOURCE")) {
+            message = "A câmera está em uso ou ocupada por outro app. Escolha 'Câmera Traseira Padrão' ou feche outras abas.";
+          }
+          addToast(message, "error", errMsg);
+          
+          // Automatic fallback to standard Environment camera if a specific camera id fails
+          if (selectedCameraId !== 'environment') {
+            setSelectedCameraId('environment');
+          }
         }
       }
     };
@@ -702,7 +696,7 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
 
           {scanActive && (
             <div className="p-4 bg-slate-100 flex flex-col gap-3">
-              {cameras.length > 1 && (
+              {cameras.length > 0 && (
                 <div className="flex flex-col bg-white p-3 rounded-2xl border border-slate-200">
                   <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 block">
                     Selecionar Câmera
@@ -712,6 +706,7 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
                     value={selectedCameraId}
                     onChange={(e) => setSelectedCameraId(e.target.value)}
                   >
+                    <option value="environment">Câmera Traseira Padrão (Recomendada)</option>
                     {cameras.map((cam) => (
                       <option key={cam.id} value={cam.id}>
                         {cam.label || `Câmera (${cam.id.slice(0, 8)}...)`}
