@@ -29,15 +29,20 @@ export interface Product {
   id_app: string;
   date_update: string;
   id_bm: number;
+  id_bm_produtosprincipal?: number;
   referencia: string;
   descricao: string;
   marca: string;
+  foto?: string | null;
+  ativo?: string;
 }
 
 export interface Inventory {
   id_app: string;
   date_update: string;
   data: string;
+  datahora_abertura?: string | null;
+  datahora_fechamento?: string | null;
   ativo?: string;
 }
 

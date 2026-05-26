@@ -69,9 +69,14 @@ export async function POST(req: NextRequest) {
           id_app varchar(25) NOT NULL,
           date_update datetime DEFAULT (NOW()) ON UPDATE CURRENT_TIMESTAMP,
           data date DEFAULT (CURDATE()),
+          datahora_abertura datetime DEFAULT (NOW()),
+          datahora_fechamento datetime DEFAULT NULL,
+          ativo varchar(1) DEFAULT 'S',
           PRIMARY KEY (id_app)
         )
       `);
+      await ensureColumn('app_inventarios', 'datahora_abertura', "datetime DEFAULT (NOW())");
+      await ensureColumn('app_inventarios', 'datahora_fechamento', "datetime DEFAULT NULL");
       await ensureColumn('app_inventarios', 'ativo', "varchar(1) DEFAULT 'S'");
 
       await connection.execute(`
@@ -91,13 +96,19 @@ export async function POST(req: NextRequest) {
         CREATE TABLE IF NOT EXISTS app_produtos (
           id_app varchar(25) NOT NULL,
           date_update datetime DEFAULT (NOW()) ON UPDATE CURRENT_TIMESTAMP,
+          id_bm_produtosprincipal int DEFAULT 0,
           id_bm int DEFAULT 0,
           referencia varchar(25) DEFAULT '',
           descricao varchar(255) DEFAULT '',
           marca varchar(25) DEFAULT '',
+          foto longblob DEFAULT NULL,
+          ativo char(1) DEFAULT 'S',
           PRIMARY KEY (id_app)
         )
       `);
+      await ensureColumn('app_produtos', 'id_bm_produtosprincipal', 'int DEFAULT 0');
+      await ensureColumn('app_produtos', 'foto', 'longblob DEFAULT NULL');
+      await ensureColumn('app_produtos', 'ativo', "char(1) DEFAULT 'S'");
       
       await connection.end();
       return NextResponse.json({ success: true, message: 'Estrutura verificada e atualizada com sucesso' });
@@ -140,19 +151,47 @@ export async function POST(req: NextRequest) {
         }
       };
 
-      const mapProductRow = (row: any) => ({
-        id_app: row.id_app,
-        id_bm: Number(row.id_bm || 0),
-        referencia: row.referencia || '',
-        descricao: row.descricao || '',
-        marca: row.marca || '',
-        date_update: row.date_update instanceof Date ? row.date_update.toISOString() : (row.date_update || new Date().toISOString())
-      });
+      const getBufferFromBase64 = (base64Str: string | null | undefined) => {
+        if (!base64Str) return null;
+        try {
+          const clean = base64Str.includes(';base64,') ? base64Str.split(';base64,').pop() : base64Str;
+          return Buffer.from(clean || '', 'base64');
+        } catch (e) {
+          return null;
+        }
+      };
+
+      const mapProductRow = (row: any) => {
+        let base64Foto: string | null = null;
+        if (row.foto) {
+          if (Buffer.isBuffer(row.foto)) {
+            const rawB64 = row.foto.toString('base64');
+            base64Foto = rawB64.startsWith('data:') ? rawB64 : `data:image/jpeg;base64,${rawB64}`;
+          } else if (typeof row.foto === 'string') {
+            const rawStr = row.foto;
+            base64Foto = rawStr.startsWith('data:') ? rawStr : `data:image/jpeg;base64,${rawStr}`;
+          }
+        }
+
+        return {
+          id_app: row.id_app,
+          id_bm: Number(row.id_bm || 0),
+          id_bm_produtosprincipal: Number(row.id_bm_produtosprincipal || 0),
+          referencia: row.referencia || '',
+          descricao: row.descricao || '',
+          marca: row.marca || '',
+          foto: base64Foto,
+          ativo: row.ativo || 'S',
+          date_update: row.date_update instanceof Date ? row.date_update.toISOString() : (row.date_update || new Date().toISOString())
+        };
+      };
 
       const mapInventoryRow = (row: any) => ({
         id_app: row.id_app,
         data: row.data instanceof Date ? row.data.toISOString().split('T')[0] : (row.data || new Date().toISOString().split('T')[0]),
         date_update: row.date_update instanceof Date ? row.date_update.toISOString() : (row.date_update || new Date().toISOString()),
+        datahora_abertura: row.datahora_abertura instanceof Date ? row.datahora_abertura.toISOString() : (row.datahora_abertura || null),
+        datahora_fechamento: row.datahora_fechamento instanceof Date ? row.datahora_fechamento.toISOString() : (row.datahora_fechamento || null),
         ativo: row.ativo || 'S'
       });
 
@@ -190,8 +229,18 @@ export async function POST(req: NextRequest) {
         if (local && !mysqlRow) {
           // Send to MySQL (Not found in mysql)
           await connection.execute(
-            'INSERT INTO app_produtos (id_app, id_bm, referencia, descricao, marca, date_update) VALUES (?, ?, ?, ?, ?, ?)',
-            [local.id_app, local.id_bm, local.referencia, local.descricao, local.marca, formatToMySQL(local.date_update)]
+            'INSERT INTO app_produtos (id_app, id_bm, id_bm_produtosprincipal, referencia, descricao, marca, ativo, foto, date_update) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [
+              local.id_app,
+              local.id_bm || 0,
+              local.id_bm_produtosprincipal || 0,
+              local.referencia || '',
+              local.descricao || '',
+              local.marca || '',
+              local.ativo || 'S',
+              getBufferFromBase64(local.foto),
+              formatToMySQL(local.date_update)
+            ]
           );
           finalProducts.push(local);
         } else if (local && mysqlRow) {
@@ -201,8 +250,18 @@ export async function POST(req: NextRequest) {
           if (localTime > mysqlTime) {
             // Local is newer -> Update MySQL
             await connection.execute(
-              'UPDATE app_produtos SET id_bm=?, referencia=?, descricao=?, marca=?, date_update=? WHERE id_app=?',
-              [local.id_bm, local.referencia, local.descricao, local.marca, formatToMySQL(local.date_update), local.id_app]
+              'UPDATE app_produtos SET id_bm=?, id_bm_produtosprincipal=?, referencia=?, descricao=?, marca=?, ativo=?, foto=?, date_update=? WHERE id_app=?',
+              [
+                local.id_bm || 0,
+                local.id_bm_produtosprincipal || 0,
+                local.referencia || '',
+                local.descricao || '',
+                local.marca || '',
+                local.ativo || 'S',
+                getBufferFromBase64(local.foto),
+                formatToMySQL(local.date_update),
+                local.id_app
+              ]
             );
             finalProducts.push(local);
           } else {
@@ -239,8 +298,15 @@ export async function POST(req: NextRequest) {
         if (local && !mysqlRow) {
           // Send to MySQL (Not found)
           await connection.execute(
-            'INSERT INTO app_inventarios (id_app, data, date_update, ativo) VALUES (?, ?, ?, ?)',
-            [local.id_app, formatDateOnly(local.data), formatToMySQL(local.date_update), local.ativo || 'S']
+            'INSERT INTO app_inventarios (id_app, data, date_update, datahora_abertura, datahora_fechamento, ativo) VALUES (?, ?, ?, ?, ?, ?)',
+            [
+              local.id_app,
+              formatDateOnly(local.data),
+              formatToMySQL(local.date_update),
+              formatToMySQL(local.datahora_abertura),
+              formatToMySQL(local.datahora_fechamento),
+              local.ativo || 'S'
+            ]
           );
           finalInventories.push(local);
         } else if (local && mysqlRow) {
@@ -250,8 +316,15 @@ export async function POST(req: NextRequest) {
           if (localTime > mysqlTime) {
             // Local is newer -> Update MySQL
             await connection.execute(
-              'UPDATE app_inventarios SET data=?, date_update=?, ativo=? WHERE id_app=?',
-              [formatDateOnly(local.data), formatToMySQL(local.date_update), local.ativo || 'S', local.id_app]
+              'UPDATE app_inventarios SET data=?, date_update=?, datahora_abertura=?, datahora_fechamento=?, ativo=? WHERE id_app=?',
+              [
+                formatDateOnly(local.data),
+                formatToMySQL(local.date_update),
+                formatToMySQL(local.datahora_abertura),
+                formatToMySQL(local.datahora_fechamento),
+                local.ativo || 'S',
+                local.id_app
+              ]
             );
             finalInventories.push(local);
           } else {

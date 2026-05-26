@@ -23,7 +23,9 @@ import {
   Trash2,
   Keyboard,
   Camera,
-  Sparkles
+  Sparkles,
+  Lock,
+  Unlock
 } from 'lucide-react';
 import { dbService, generateAppId, Product, Inventory, InventoryItem } from '@/lib/db';
 import { Html5QrcodeScanner, Html5Qrcode } from 'html5-qrcode';
@@ -67,6 +69,45 @@ const parseBankInput = (raw: string) => {
   return parseInt(digits) / 100;
 };
 
+const playErrorBeep = () => {
+  try {
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContextClass) return;
+    const ctx = new AudioContextClass();
+    
+    const playSingleBeep = (startTime: number) => {
+      const osc1 = ctx.createOscillator();
+      const osc2 = ctx.createOscillator();
+      const gainNode = ctx.createGain();
+      
+      osc1.type = 'sawtooth';
+      osc1.frequency.setValueAtTime(1500, startTime);
+      
+      osc2.type = 'square';
+      osc2.frequency.setValueAtTime(1550, startTime);
+      
+      gainNode.gain.setValueAtTime(0.3, startTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, startTime + 0.15);
+      
+      osc1.connect(gainNode);
+      osc2.connect(gainNode);
+      gainNode.connect(ctx.destination);
+      
+      osc1.start(startTime);
+      osc2.start(startTime);
+      osc1.stop(startTime + 0.15);
+      osc2.stop(startTime + 0.15);
+    };
+
+    const now = ctx.currentTime;
+    playSingleBeep(now);
+    playSingleBeep(now + 0.2);
+    playSingleBeep(now + 0.4);
+  } catch (error) {
+    console.warn("Erro ao reproduzir áudio:", error);
+  }
+};
+
 // --- Types ---
 type Screen = 'menu' | 'produtos' | 'inventarios' | 'sincronizar' | 'digitar';
 
@@ -81,6 +122,9 @@ interface ConfirmOptions {
   title: string;
   message: string;
   onConfirm: () => void;
+  confirmText?: string;
+  confirmColorClassName?: string;
+  icon?: React.ReactNode;
 }
 
 export default function Home() {
@@ -99,14 +143,25 @@ export default function Home() {
     }, 5000);
   };
 
-  const showConfirm = (title: string, message: string, onConfirm: () => void) => {
-    setConfirmModal({ title, message, onConfirm });
+  const showConfirm = (
+    title: string,
+    message: string,
+    onConfirm: () => void,
+    confirmText?: string,
+    confirmColorClassName?: string,
+    icon?: React.ReactNode
+  ) => {
+    setConfirmModal({ title, message, onConfirm, confirmText, confirmColorClassName, icon });
   };
 
   // Database state
   const [products, setProducts] = useState<Product[]>([]);
   const [inventories, setInventories] = useState<Inventory[]>([]);
   const [loading, setLoading] = useState(false);
+  
+  // Direct sync state
+  const [syncLoading, setSyncLoading] = useState(false);
+  const [syncMessage, setSyncMessage] = useState('');
   
   // Search state
   const [searchQuery, setSearchQuery] = useState('');
@@ -125,9 +180,91 @@ export default function Home() {
     setLoading(false);
   }
 
+  const handleDirectSync = async () => {
+    setSyncLoading(true);
+    setSyncMessage('Preparando dados para sincronização...');
+    try {
+      // 1. Obter configuração do MySQL
+      let config = { host: '', port: '3306', database: '' };
+      if (typeof window !== 'undefined') {
+        const saved = localStorage.getItem('mysql_config');
+        if (saved) {
+          try {
+            const parsed = JSON.parse(saved);
+            config = {
+              host: parsed.host || '',
+              port: parsed.port || '3306',
+              database: parsed.database || ''
+            };
+          } catch (e) {}
+        }
+      }
+
+      // Se host ou database vazio, tenta carregar defaults do backend
+      if (!config.host || !config.database) {
+        try {
+          const resDefault = await fetch('/api/sync');
+          const dataDefault = await resDefault.json();
+          config = {
+            host: config.host || dataDefault.host || '',
+            port: config.port || dataDefault.port || '3306',
+            database: config.database || dataDefault.database || ''
+          };
+        } catch (err) {
+          console.warn('Erro ao carregar configurações padrão na sincronização direta:', err);
+        }
+      }
+
+      // 2. Coletar dados locais
+      setSyncMessage('Coletando dados locais...');
+      const localProducts = await dbService.getProducts();
+      const localInventories = await dbService.getInventoriesRaw();
+      const allItems: InventoryItem[] = [];
+      for (const inv of localInventories) {
+        const items = await dbService.getInventoryItemsRaw(inv.id_app);
+        allItems.push(...items);
+      }
+
+      // 3. Enviar para API de Sincronização
+      setSyncMessage('Sincronizando com o servidor...');
+      const res = await fetch('/api/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          config,
+          action: 'sync',
+          data: {
+            localProducts,
+            localInventories,
+            localItems: allItems
+          }
+        })
+      });
+
+      const result = await res.json();
+      if (result.success) {
+        setSyncMessage('Atualizando banco de dados local...');
+        await dbService.clearAll();
+        for (const p of result.data.products) await dbService.saveProduct(p);
+        for (const i of result.data.inventories) await dbService.saveInventory(i);
+        for (const it of result.data.items) await dbService.saveInventoryItem(it);
+        
+        await loadData();
+        addToast('Sincronização OK', 'success', result.message || 'Sincronização realizada com sucesso!');
+      } else {
+        addToast('Erro ao sincronizar', 'error', result.error);
+      }
+    } catch (e: any) {
+      addToast('Falha na sincronização', 'error', e.message);
+    } finally {
+      setSyncLoading(false);
+      setSyncMessage('');
+    }
+  };
+
   // Main Render
   return (
-    <main className="w-full min-h-screen bg-slate-50 relative flex flex-col overflow-hidden text-slate-900 border-none">
+    <main className="w-full h-screen h-[100dvh] bg-slate-50 relative flex flex-col overflow-hidden text-slate-900 border-none">
       <AnimatePresence mode="wait">
         <motion.div
            key={currentScreen}
@@ -158,6 +295,7 @@ export default function Home() {
                 setSelectedInventory(inv);
                 setCurrentScreen('digitar');
               }}
+              onSync={handleDirectSync}
             />
           )}
           {currentScreen === 'digitar' && selectedInventory && (
@@ -169,7 +307,7 @@ export default function Home() {
               showConfirm={showConfirm}
             />
           )}
-          {currentScreen === 'sincronizar' && <SincronizarScreen onBack={() => setCurrentScreen('menu')} onSyncSuccess={loadData} addToast={addToast} />}
+          {currentScreen === 'sincronizar' && <SincronizarScreen onBack={() => setCurrentScreen('inventarios')} onSyncSuccess={loadData} addToast={addToast} />}
         </motion.div>
       </AnimatePresence>
 
@@ -214,7 +352,7 @@ export default function Home() {
               className="bg-white w-full max-w-xs rounded-3xl p-8 shadow-2xl flex flex-col text-center"
             >
               <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-6">
-                <Trash2 className="w-8 h-8 text-slate-400" />
+                {confirmModal.icon || <Trash2 className="w-8 h-8 text-slate-400" />}
               </div>
               <h3 className="font-black text-slate-900 uppercase tracking-tight mb-2">{confirmModal.title}</h3>
               <p className="text-sm text-slate-500 font-bold mb-8 leading-relaxed uppercase tracking-wider text-[11px]">{confirmModal.message}</p>
@@ -230,12 +368,35 @@ export default function Home() {
                     confirmModal.onConfirm();
                     setConfirmModal(null);
                   }}
-                  className="flex-1 bg-red-500 text-white py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] shadow-lg shadow-red-200"
+                  className={`flex-1 text-white py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] shadow-lg transition-all ${
+                    confirmModal.confirmColorClassName || 'bg-red-500 shadow-red-200 hover:bg-red-600'
+                  }`}
                 >
-                  Sim, Excluir
+                  {confirmModal.confirmText || 'Sim, Excluir'}
                 </button>
               </div>
             </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Dynamic Sync Overlay */}
+      <AnimatePresence>
+        {syncLoading && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-[20000] flex flex-col items-center justify-center p-6 text-center"
+          >
+            <div className="w-20 h-20 bg-slate-900 border border-slate-800 rounded-3xl flex items-center justify-center mb-6 shadow-2xl relative overflow-hidden">
+              <div className="absolute inset-0 bg-gradient-to-tr from-blue-500/10 via-transparent to-transparent animate-pulse" />
+              <RefreshCcw className="w-10 h-10 text-blue-400 animate-spin" />
+            </div>
+            <h3 className="font-black text-white uppercase tracking-wider text-sm mb-2">Sincronizando Dados</h3>
+            <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest max-w-xs animate-pulse leading-relaxed">
+              {syncMessage}
+            </p>
           </motion.div>
         )}
       </AnimatePresence>
@@ -310,7 +471,7 @@ const ProductsScreen = ({ products, searchQuery, setSearchQuery, onBack }: Produ
   });
 
   return (
-    <div className="flex flex-col h-full bg-slate-50">
+    <div className="flex flex-col h-full bg-slate-50 overflow-hidden">
       <Header title="Produtos" onBack={onBack} />
       <div className="bg-white border-b border-slate-200">
         <div className="relative">
@@ -331,7 +492,10 @@ const ProductsScreen = ({ products, searchQuery, setSearchQuery, onBack }: Produ
               <div className="flex justify-between items-start">
                 <div className="flex-1">
                   <h3 className="font-bold text-slate-900 text-sm leading-tight uppercase tracking-tight">{p.descricao}</h3>
-                  <div className="flex flex-wrap gap-2 mt-2">
+                  <div className="flex flex-wrap gap-2 mt-2 items-center">
+                    {p.id_bm_produtosprincipal !== undefined && (
+                      <span className="text-[11px] font-bold text-blue-600 uppercase tracking-widest bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100">Id: {p.id_bm_produtosprincipal}</span>
+                    )}
                     <span className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">Ref: {p.referencia}</span>
                     <span className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">Marca: {p.marca}</span>
                   </div>
@@ -359,10 +523,18 @@ interface InventoriesScreenProps {
   onBack: () => void;
   onSelectInventory: (inv: Inventory) => void;
   addToast: (msg: string, type: 'success' | 'error', detail?: string) => void;
-  showConfirm: (title: string, message: string, onConfirm: () => void) => void;
+  showConfirm: (
+    title: string,
+    message: string,
+    onConfirm: () => void,
+    confirmText?: string,
+    confirmColorClassName?: string,
+    icon?: React.ReactNode
+  ) => void;
+  onSync: () => void;
 }
 
-const InventoriesScreen = ({ inventories, loadData, onBack, onSelectInventory, addToast, showConfirm }: InventoriesScreenProps) => {
+const InventoriesScreen = ({ inventories, loadData, onBack, onSelectInventory, addToast, showConfirm, onSync }: InventoriesScreenProps) => {
   const [isCreating, setIsCreating] = useState(false);
   const [newDate, setNewDate] = useState(new Date().toISOString().split('T')[0]);
 
@@ -372,7 +544,8 @@ const InventoriesScreen = ({ inventories, loadData, onBack, onSelectInventory, a
       const newInv: Inventory = {
         id_app: generateAppId(),
         data: newDate,
-        date_update: now
+        date_update: now,
+        datahora_abertura: now
       };
       await dbService.saveInventory(newInv);
       setIsCreating(false);
@@ -383,29 +556,95 @@ const InventoriesScreen = ({ inventories, loadData, onBack, onSelectInventory, a
     }
   };
 
+  const handleToggleClose = async (inv: Inventory) => {
+    const isClosed = !!inv.datahora_fechamento;
+    const actionWord = isClosed ? 'reabrir' : 'fechar';
+    const confirmButtonText = isClosed ? 'Sim, Reabrir' : 'Sim, Fechar';
+    const confirmColor = isClosed 
+      ? 'bg-emerald-600 shadow-emerald-200 hover:bg-emerald-700' 
+      : 'bg-red-500 shadow-red-200 hover:bg-red-600';
+    const confirmIcon = isClosed 
+      ? <Unlock className="w-8 h-8 text-emerald-500" />
+      : <Lock className="w-8 h-8 text-red-500" />;
+    
+    showConfirm(
+      `${isClosed ? 'Reabrir' : 'Fechar'} Inventário`,
+      `Tem certeza que deseja ${actionWord} o inventário de ${formatDate(inv.data)}?`,
+      async () => {
+        try {
+          const now = new Date().toISOString();
+          const nextClosed = isClosed ? null : now;
+          const updated: Inventory = {
+            ...inv,
+            datahora_fechamento: nextClosed,
+            ativo: nextClosed ? 'N' : 'S',
+            date_update: now
+          };
+          await dbService.saveInventory(updated);
+          addToast(`Inventário ${isClosed ? 'reaberto' : 'fechado'} com sucesso!`, 'success');
+          loadData();
+        } catch (e: any) {
+          addToast(`Erro ao ${actionWord} inventário`, 'error', e.message);
+        }
+      },
+      confirmButtonText,
+      confirmColor,
+      confirmIcon
+    );
+  };
+
   return (
-    <div className="flex flex-col h-full bg-slate-50">
+    <div className="flex flex-col h-full bg-slate-50 overflow-hidden">
       <Header title="Inventários" onBack={onBack} />
       
-      <div className="bg-white border-b border-slate-200">
+      <div className="bg-white border-b border-slate-200 flex flex-col">
         <button 
           onClick={() => setIsCreating(true)}
-          className="w-full bg-blue-600 text-white py-4 font-bold uppercase tracking-widest text-sm flex items-center justify-center gap-2 active:bg-blue-700 transition-all"
+          className="w-full bg-blue-600 text-white py-4 font-bold uppercase tracking-widest text-sm flex items-center justify-center gap-2 active:bg-blue-700 transition-all border-b border-slate-100"
         >
           <Plus className="w-5 h-5" /> Novo Inventário
+        </button>
+        <button 
+          onClick={onSync}
+          className="w-full bg-slate-900 text-white py-4 font-bold uppercase tracking-widest text-sm flex items-center justify-center gap-2 active:bg-slate-800 transition-all"
+        >
+          <RefreshCcw className="w-5 h-5 text-blue-400" /> Sincronizar
         </button>
       </div>
 
       <div className="flex-1 overflow-y-auto">
         <div className="flex flex-col">
           {inventories.map((inv: Inventory) => (
-            <div key={inv.id_app} className="bg-white p-5 border-b border-slate-100">
+            <div key={inv.id_app} className="bg-white p-5 border-b border-slate-100 animate-fade-in">
               <div className="flex justify-between items-start mb-4">
                 <div>
-                  <h3 className="font-bold text-slate-900 text-sm tracking-tight uppercase leading-none">Inventário {formatDate(inv.data)}</h3>
-                  <div className="flex items-center gap-3 mt-2">
+                  <div className="flex items-center gap-2">
+                    <h3 className="font-bold text-slate-900 text-sm tracking-tight uppercase leading-none">
+                      Inventário {formatDate(inv.data)}
+                    </h3>
+                    {inv.datahora_fechamento ? (
+                      <span className="bg-red-50 text-red-600 text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border border-red-100 flex items-center gap-1 shrink-0">
+                        <Lock className="w-2.5 h-2.5" /> Fechado
+                      </span>
+                    ) : (
+                      <span className="bg-emerald-50 text-emerald-600 text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border border-emerald-100 flex items-center gap-1 shrink-0">
+                        <Unlock className="w-2.5 h-2.5" /> Aberto
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-1 mt-2">
                     <div className="flex items-center gap-1.5 text-slate-400 text-[10px] uppercase font-bold tracking-widest">
-                      <Clock className="w-3 h-3" />
+                      <Clock className="w-3 h-3 text-slate-300" />
+                      Abertura: {inv.datahora_abertura ? formatDateTime(inv.datahora_abertura) : "Não informada"}
+                    </div>
+                    {inv.datahora_fechamento && (
+                      <div className="flex items-center gap-1.5 text-red-400 text-[10px] uppercase font-bold tracking-widest">
+                        <Lock className="w-3 h-3 text-red-300" />
+                        Fechamento: {formatDateTime(inv.datahora_fechamento)}
+                      </div>
+                    )}
+                    <div className="flex items-center gap-1.5 text-slate-400 text-[10px] uppercase font-bold tracking-widest">
+                      <Clock className="w-3 h-3 text-slate-300" />
                       Atu: {formatDateTime(inv.date_update)}
                     </div>
                   </div>
@@ -414,18 +653,41 @@ const InventoriesScreen = ({ inventories, loadData, onBack, onSelectInventory, a
               
               <div className="grid grid-cols-2 gap-2">
                 <button 
-                  onClick={() => onSelectInventory(inv)}
-                  className="flex items-center justify-center gap-2 bg-slate-900 text-white py-3 rounded font-bold active:bg-slate-800 transition-colors"
+                  onClick={() => {
+                    if (inv.datahora_fechamento) {
+                      addToast('Este inventário está fechado e não pode mais ser digitado.', 'error');
+                      return;
+                    }
+                    onSelectInventory(inv);
+                  }}
+                  className={`flex items-center justify-center gap-2 py-3 rounded font-bold transition-all ${
+                    inv.datahora_fechamento 
+                      ? 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200' 
+                      : 'bg-slate-900 text-white active:bg-slate-800'
+                  }`}
                 >
-                  <Type className="w-4 h-4 text-blue-400" /> 
+                  <Type className="w-4 h-4 text-blue-400 flex-shrink-0" /> 
                   <span className="text-[11px] uppercase tracking-widest">Digitar</span>
                 </button>
                 <button 
-                  onClick={() => {/* Edit logic */}}
-                  className="flex items-center justify-center gap-2 bg-slate-50 text-slate-500 py-3 rounded font-bold active:bg-slate-100 transition-colors border border-slate-200"
+                  onClick={() => handleToggleClose(inv)}
+                  className={`flex items-center justify-center gap-2 py-3 rounded font-bold transition-all border ${
+                    inv.datahora_fechamento
+                      ? 'bg-emerald-50 text-emerald-600 border-emerald-200 active:bg-emerald-100'
+                      : 'bg-red-50 text-red-600 border-red-200 active:bg-red-100'
+                  }`}
                 >
-                  <Edit className="w-4 h-4" /> 
-                  <span className="text-[11px] uppercase tracking-widest">Editar</span>
+                  {inv.datahora_fechamento ? (
+                    <>
+                      <Unlock className="w-4 h-4 text-emerald-500 flex-shrink-0" /> 
+                      <span className="text-[11px] uppercase tracking-widest">Reabrir</span>
+                    </>
+                  ) : (
+                    <>
+                      <Lock className="w-4 h-4 text-red-500 flex-shrink-0" /> 
+                      <span className="text-[11px] uppercase tracking-widest">Fechar</span>
+                    </>
+                  )}
                 </button>
               </div>
             </div>
@@ -480,7 +742,14 @@ interface DigitarScreenProps {
   selectedInventory: Inventory;
   onBack: () => void;
   addToast: (msg: string, type: 'success' | 'error', detail?: string) => void;
-  showConfirm: (title: string, message: string, onConfirm: () => void) => void;
+  showConfirm: (
+    title: string,
+    message: string,
+    onConfirm: () => void,
+    confirmText?: string,
+    confirmColorClassName?: string,
+    icon?: React.ReactNode
+  ) => void;
 }
 
 const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConfirm }: DigitarScreenProps) => {
@@ -583,7 +852,22 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
 
   const handleSearch = useCallback(async (code: string) => {
     if (!code) return;
-    const found = products.find((p: Product) => p.referencia === code);
+    const trimmedCode = code.trim();
+    
+    // 1. Procure o produto pelo campo "referencia"
+    let found = products.find((p: Product) => {
+      return p.referencia && p.referencia.toString().trim() === trimmedCode;
+    });
+
+    // 2. Se não achar, procure pelo campo "id_bm_produtosprincipal"
+    if (!found) {
+      found = products.find((p: Product) => {
+        return p.id_bm_produtosprincipal !== undefined && 
+               p.id_bm_produtosprincipal !== null && 
+               p.id_bm_produtosprincipal.toString().trim() === trimmedCode;
+      });
+    }
+
     if (found) {
       if (digitarQtdMode) {
         setFoundedProduct(found);
@@ -609,7 +893,9 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
         }
       }
     } else {
-      addToast('Produto não localizado.', 'error');
+      // 3. Emitir som estridente e mensagem de erro
+      playErrorBeep();
+      addToast(`Produto não localizado para o código: "${code}"`, 'error');
     }
   }, [products, digitarQtdMode, selectedInventory, addToast]);
 
@@ -790,188 +1076,207 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
   };
 
   return (
-    <div className="flex flex-col h-full bg-slate-50">
+    <div className="flex flex-col h-full bg-slate-50 overflow-hidden">
       <Header title={`Contagem: ${formatDate(selectedInventory.data)}`} onBack={onBack} />
       
-      <div className="flex flex-col overflow-y-auto">
-        <div className="flex flex-col">
-          <div className="bg-white px-4 py-4 border-b border-slate-200">
-            <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Referência do Produto</label>
-            <div className="flex gap-2">
-              <input 
-                type="text" 
-                className="flex-1 px-4 py-3 bg-slate-50 border border-slate-200 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" 
-                placeholder="REF..."
-                value={barcode}
-                onChange={(e) => setBarcode(e.target.value)}
-              />
-              <button 
-                type="button"
-                onClick={() => handleSearch(barcode)}
-                className="bg-slate-900 text-white p-3 rounded active:bg-slate-800 transition-colors"
-              >
-                <Search className="w-5 h-5" />
-              </button>
-              <button 
-                type="button"
-                onClick={() => setScanActive(true)}
-                className="bg-blue-600 text-white p-3 rounded active:bg-blue-700 transition-colors"
-                title="Escanear Código de Barras"
-              >
-                <Barcode className="w-5 h-5" />
-              </button>
-              <button 
-                type="button"
-                onClick={() => setCapturaConjuntoOpen(true)}
-                className="bg-emerald-600 text-white p-3 rounded active:bg-emerald-700 transition-colors"
-                title="Captura Conjunto"
-              >
-                <Camera className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="flex items-center justify-between mt-3 pt-2.5 border-t border-slate-100">
-              <span className="text-[10px] uppercase font-black text-slate-400 tracking-wider">Lançamento por Código:</span>
-              <button
-                type="button"
-                onClick={() => setDigitarQtdMode(!digitarQtdMode)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider transition-all duration-200 border ${
-                  digitarQtdMode
-                    ? 'bg-blue-50 border-blue-200 text-blue-600 shadow-sm'
-                    : 'bg-slate-100 border-slate-200 text-slate-500 hover:bg-slate-200'
-                }`}
-              >
-                <Keyboard className="w-3.5 h-3.5" />
-                <span>{digitarQtdMode ? "Digitar Quantidade" : "Auto Lançar Qtd 1"}</span>
-              </button>
-            </div>
+      {/* Painel Superior Fixo: Campos de busca, scanner e produto ativo */}
+      <div className="flex flex-col shrink-0 bg-white">
+        <div className="bg-white px-4 py-4 border-b border-slate-200">
+          <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Referência do Produto</label>
+          <div className="flex gap-2">
+            <input 
+              type="text" 
+              className="flex-1 px-4 py-3 bg-slate-50 border border-slate-200 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" 
+              placeholder="REF..."
+              value={barcode}
+              onChange={(e) => setBarcode(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  handleSearch(barcode);
+                }
+              }}
+            />
+            <button 
+              type="button"
+              onClick={() => handleSearch(barcode)}
+              className="bg-slate-900 text-white p-3 rounded active:bg-slate-800 transition-colors"
+            >
+              <Search className="w-5 h-5" />
+            </button>
+            <button 
+              type="button"
+              onClick={() => setScanActive(true)}
+              className="bg-blue-600 text-white p-3 rounded active:bg-blue-700 transition-colors"
+              title="Escanear Código de Barras"
+            >
+              <Barcode className="w-5 h-5" />
+            </button>
+            <button 
+              type="button"
+              onClick={() => setCapturaConjuntoOpen(true)}
+              className="bg-emerald-600 text-white p-3 rounded active:bg-emerald-700 transition-colors"
+              title="Captura Conjunto"
+            >
+              <Camera className="w-5 h-5" />
+            </button>
           </div>
 
-          {scanActive && (
-            <div className="p-4 bg-slate-100 flex flex-col gap-3">
-              {!camerasLoaded ? (
-                <div className="flex flex-col items-center justify-center py-8 bg-white rounded-3xl border border-slate-200 gap-3">
-                  <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none">Acessando câmeras...</p>
-                </div>
-              ) : (
-                <>
-                  {cameras.length > 0 && (
-                    <div className="flex flex-col bg-white p-3 rounded-2xl border border-slate-200">
-                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 block">
-                        Selecionar Câmera
-                      </label>
-                      <select
-                        className="w-full text-xs font-bold p-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-blue-500 text-slate-800"
-                        value={selectedCameraId}
-                        onChange={(e) => setSelectedCameraId(e.target.value)}
-                      >
-                        <option value="environment">Câmera Traseira Padrão (Recomendada)</option>
-                        {cameras.map((cam) => (
-                          <option key={cam.id} value={cam.id}>
-                            {cam.label || `Câmera (${cam.id.slice(0, 8)}...)`}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
-                  <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}>
-                     <div id="reader" className="w-full overflow-hidden bg-slate-900 border-2 border-blue-500 rounded-3xl"></div>
-                  </motion.div>
-                </>
-              )}
-              <button
-                type="button"
-                onClick={() => setScanActive(false)}
-                className="w-full py-3.5 bg-red-500 text-white font-black uppercase tracking-widest text-[10px] rounded-xl hover:bg-red-600 transition-colors shadow-lg shadow-red-100"
-              >
-                Fechar Câmera
-              </button>
-            </div>
-          )}
+          <div className="flex items-center justify-between mt-3 pt-2.5 border-t border-slate-100">
+            <span className="text-[10px] uppercase font-black text-slate-400 tracking-wider">Lançamento por Código:</span>
+            <button
+              type="button"
+              onClick={() => setDigitarQtdMode(!digitarQtdMode)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider transition-all duration-200 border ${
+                digitarQtdMode
+                  ? 'bg-blue-50 border-blue-200 text-blue-600 shadow-sm'
+                  : 'bg-slate-100 border-slate-200 text-slate-500 hover:bg-slate-200'
+              }`}
+            >
+              <Keyboard className="w-3.5 h-3.5" />
+              <span>{digitarQtdMode ? "Digitar Quantidade" : "Auto Lançar Qtd 1"}</span>
+            </button>
+          </div>
+        </div>
 
-          {foundedProduct && (
-            <div className="p-4 bg-blue-600 text-white border-b border-blue-700">
-              <motion.div 
-                initial={{ y: 10, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
-              >
-                 <div className="flex justify-between items-start mb-4">
-                  <div>
-                    <p className="text-blue-100 text-[10px] font-black uppercase tracking-widest mb-1 opacity-70">Identificado</p>
-                    <h3 className="text-lg font-black uppercase tracking-tight leading-tight">{foundedProduct.descricao}</h3>
-                    <p className="text-blue-200 text-xs mt-1 font-bold tracking-widest uppercase">Ref: {foundedProduct.referencia}</p>
+        {scanActive && (
+          <div className="p-4 bg-slate-100 flex flex-col gap-3">
+            {!camerasLoaded ? (
+              <div className="flex flex-col items-center justify-center py-8 bg-white rounded-3xl border border-slate-200 gap-3">
+                <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none">Acessando câmeras...</p>
+              </div>
+            ) : (
+              <>
+                {cameras.length > 0 && (
+                  <div className="flex flex-col bg-white p-3 rounded-2xl border border-slate-200">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 block">
+                      Selecionar Câmera
+                    </label>
+                    <select
+                      className="w-full text-xs font-bold p-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-blue-500 text-slate-800"
+                      value={selectedCameraId}
+                      onChange={(e) => setSelectedCameraId(e.target.value)}
+                    >
+                      <option value="environment">Câmera Traseira Padrão (Recomendada)</option>
+                      {cameras.map((cam) => (
+                        <option key={cam.id} value={cam.id}>
+                          {cam.label || `Câmera (${cam.id.slice(0, 8)}...)`}
+                        </option>
+                      ))}
+                    </select>
                   </div>
-                </div>
-                
-                <div className="pt-4 border-t border-white/20 flex items-end gap-4">
-                  <div className="flex-1">
-                    <label className="block text-[10px] font-black uppercase tracking-widest text-blue-100 mb-2">Quantidade</label>
-                    <input 
-                      type="text" 
-                      inputMode="numeric"
-                      autoFocus
-                      className="w-full bg-white text-slate-900 rounded p-4 text-2xl font-black border-none focus:ring-2 focus:ring-blue-400 transition-all outline-none"
-                      value={quantity}
-                      onChange={(e) => handleQuantityChange(e.target.value)}
-                    />
-                  </div>
-                  <button 
-                    onClick={handleSaveItem}
-                    className="bg-slate-900 text-white p-4 rounded active:bg-slate-800 transition-all"
-                  >
-                    <Save className="w-6 h-6 text-blue-400" />
-                  </button>
-                </div>
-              </motion.div>
-            </div>
-          )}
+                )}
+                <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}>
+                   <div id="reader" className="w-full overflow-hidden bg-slate-900 border-2 border-blue-500 rounded-3xl"></div>
+                </motion.div>
+              </>
+            )}
+            <button
+              type="button"
+              onClick={() => setScanActive(false)}
+              className="w-full py-3.5 bg-red-500 text-white font-black uppercase tracking-widest text-[10px] rounded-xl hover:bg-red-600 transition-colors shadow-lg shadow-red-100"
+            >
+              Fechar Câmera
+            </button>
+          </div>
+        )}
 
-          <div className="mt-0">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-slate-50">
-              <h4 className="font-black text-slate-800 uppercase tracking-widest text-[10px] flex items-center gap-2">
-                <ClipboardList className="w-4 h-4 text-blue-500" /> Itens Lançados
-              </h4>
-              <span className="bg-slate-200 text-slate-600 px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest">
-                Total: {items.length}
-              </span>
-            </div>
-            <div className="flex flex-col">
-              {items.map((it: InventoryItem) => {
-                const prod = products.find(p => p.id_app === it.produto_id_app || p.referencia === it.produto_referencia);
-                const descricao = prod ? prod.descricao : '';
-                return (
-                  <div key={it.id_app} className="bg-white p-4 border-b border-slate-100 flex justify-between items-center">
-                     <div className="flex items-center gap-4 min-w-0">
-                       <div className="w-8 h-8 rounded bg-slate-50 border border-slate-100 flex items-center justify-center font-black text-blue-600 text-xs shrink-0">
-                          {it.qtdade}
-                       </div>
-                       <div className="min-w-0">
-                         <div className="flex flex-wrap items-baseline gap-x-2">
-                           <span className="font-bold text-slate-800 uppercase text-sm tracking-tight">{it.produto_referencia}</span>
-                           {descricao && (
-                             <span className="text-xs font-semibold text-slate-500 uppercase truncate">
-                               - {descricao}
-                             </span>
-                           )}
-                         </div>
-                         <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">{formatDateTime(it.date_update)}</p>
-                       </div>
+        {foundedProduct && (
+          <div className="p-4 bg-blue-600 text-white border-b border-blue-700">
+            <motion.div 
+              initial={{ y: 10, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
+            >
+               <div className="flex justify-between items-start mb-4">
+                <div>
+                  <p className="text-blue-100 text-[10px] font-black uppercase tracking-widest mb-1 opacity-70">Identificado</p>
+                  <h3 className="text-lg font-black uppercase tracking-tight leading-tight">{foundedProduct.descricao}</h3>
+                  <p className="text-blue-200 text-xs mt-1 font-bold tracking-widest uppercase flex flex-wrap gap-2 items-center">
+                    {foundedProduct.id_bm_produtosprincipal !== undefined && (
+                      <span className="bg-blue-700/80 text-[10px] text-white px-1.5 py-0.5 rounded border border-blue-500 font-bold uppercase tracking-widest">Id: {foundedProduct.id_bm_produtosprincipal}</span>
+                    )}
+                    <span>Ref: {foundedProduct.referencia}</span>
+                  </p>
+                </div>
+              </div>
+              
+              <div className="pt-4 border-t border-white/20 flex items-end gap-4">
+                <div className="flex-1">
+                  <label className="block text-[10px] font-black uppercase tracking-widest text-blue-100 mb-2">Quantidade</label>
+                  <input 
+                    type="text" 
+                    inputMode="numeric"
+                    autoFocus
+                    className="w-full bg-white text-slate-900 rounded p-4 text-2xl font-black border-none focus:ring-2 focus:ring-blue-400 transition-all outline-none"
+                    value={quantity}
+                    onChange={(e) => handleQuantityChange(e.target.value)}
+                  />
+                </div>
+                <button 
+                  onClick={handleSaveItem}
+                  className="bg-slate-900 text-white p-4 rounded active:bg-slate-800 transition-all"
+                >
+                  <Save className="w-6 h-6 text-blue-400" />
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </div>
+
+      {/* Painel Inferior: Lista de Itens Lançados (Esta parte rola individualmente) */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-slate-50 shrink-0">
+          <h4 className="font-black text-slate-800 uppercase tracking-widest text-[10px] flex items-center gap-2">
+            <ClipboardList className="w-4 h-4 text-blue-500" /> Itens Lançados
+          </h4>
+          <span className="bg-slate-200 text-slate-600 px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest">
+            Total: {items.length}
+          </span>
+        </div>
+        
+        <div className="flex-1 overflow-y-auto bg-white">
+          <div className="flex flex-col">
+            {items.map((it: InventoryItem) => {
+              const prod = products.find(p => p.id_app === it.produto_id_app || p.referencia === it.produto_referencia);
+              const descricao = prod ? prod.descricao : '';
+              return (
+                <div key={it.id_app} className="bg-white p-4 border-b border-slate-100 flex justify-between items-center">
+                   <div className="flex items-center gap-4 min-w-0">
+                     <div className="w-8 h-8 rounded bg-slate-50 border border-slate-100 flex items-center justify-center font-black text-blue-600 text-xs shrink-0">
+                        {it.qtdade}
                      </div>
-                     <button 
-                       onClick={() => handleDeleteItem(it.id_app)}
-                       className="p-2 text-slate-300 hover:text-red-500 active:scale-90 transition-all shrink-0"
-                     >
-                        <Trash2 className="w-4 h-4" />
-                     </button>
-                  </div>
-                );
-              })}
-              {items.length === 0 && !foundedProduct && (
-                <div className="bg-slate-100/50 border border-dashed border-slate-200 py-10 text-center text-slate-400 font-bold uppercase tracking-widest text-[10px]">
-                  Sem lançamentos
+                     <div className="min-w-0">
+                       <div className="flex flex-wrap items-baseline gap-x-2">
+                         <span className="font-bold text-slate-800 uppercase text-sm tracking-tight">{it.produto_referencia}</span>
+                         {descricao && (
+                           <span className="text-xs font-semibold text-slate-500 uppercase truncate">
+                             - {descricao}
+                           </span>
+                         )}
+                       </div>
+                        <div className="flex flex-wrap items-center gap-2 mt-0.5">
+                          {prod && prod.id_bm_produtosprincipal !== undefined && (
+                            <span className="text-[9px] font-black text-blue-600 uppercase tracking-widest bg-blue-50 px-1.5 py-0.5 rounded border border-blue-100">Id: {prod.id_bm_produtosprincipal}</span>
+                          )}
+                          <span className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">{formatDateTime(it.date_update)}</span>
+                        </div>
+                     </div>
+                   </div>
+                   <button 
+                     onClick={() => handleDeleteItem(it.id_app)}
+                     className="p-2 text-slate-300 hover:text-red-500 active:scale-90 transition-all shrink-0"
+                   >
+                      <Trash2 className="w-4 h-4" />
+                   </button>
                 </div>
-              )}
-            </div>
+              );
+            })}
+            {items.length === 0 && !foundedProduct && (
+              <div className="bg-slate-100/50 border border-dashed border-slate-200 py-10 text-center text-slate-400 font-bold uppercase tracking-widest text-[10px]">
+                Sem lançamentos
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -1035,7 +1340,7 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
                   <option value="">-- Escolha o produto cadastrado --</option>
                   {products.map(p => (
                     <option key={p.id_app} value={p.id_app}>
-                      [{p.referencia}] {p.descricao}
+                      [{p.referencia}] {p.descricao} {p.id_bm_produtosprincipal !== undefined ? `(Id: ${p.id_bm_produtosprincipal})` : ''}
                     </option>
                   ))}
                 </select>
@@ -1315,9 +1620,9 @@ const SincronizarScreen = ({ onBack, onSyncSuccess, addToast }: SincronizarScree
   };
 
   return (
-    <div className="flex flex-col h-full bg-slate-50">
+    <div className="flex flex-col h-full bg-slate-50 overflow-hidden">
       <Header title="Sincronizar" onBack={onBack} />
-      <div className="flex flex-col overflow-y-auto">
+      <div className="flex-1 overflow-y-auto">
         <div className="flex flex-col">
           <div className="bg-white p-6 border-b border-slate-200 shadow-sm">
             <h3 className="font-bold text-slate-800 mb-6 flex items-center gap-2 uppercase tracking-tight text-sm">

@@ -24,8 +24,8 @@ export const viewport: Viewport = {
 
 export default function RootLayout({children}: {children: React.ReactNode}) {
   return (
-    <html lang="pt-BR" className={jost.variable}>
-      <body className={jost.className} suppressHydrationWarning>
+    <html lang="pt-BR" className={`${jost.variable} h-screen h-[100dvh] overflow-hidden`}>
+      <body className={`${jost.className} h-screen h-[100dvh] overflow-hidden`} suppressHydrationWarning>
         {children}
       </body>
     </html>
