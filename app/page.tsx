@@ -19,7 +19,8 @@ import {
   XCircle,
   Clock,
   ChevronRight,
-  Trash2
+  Trash2,
+  Keyboard
 } from 'lucide-react';
 import { dbService, generateAppId, Product, Inventory, InventoryItem } from '@/lib/db';
 import { Html5QrcodeScanner, Html5Qrcode } from 'html5-qrcode';
@@ -485,16 +486,39 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
   const [foundedProduct, setFoundedProduct] = useState<Product | null>(null);
   const [quantity, setQuantity] = useState('0,00');
   const [items, setItems] = useState<InventoryItem[]>([]);
+  const [digitarQtdMode, setDigitarQtdMode] = useState<boolean>(false);
 
   const handleSearch = useCallback(async (code: string) => {
+    if (!code) return;
     const found = products.find((p: Product) => p.referencia === code);
     if (found) {
-      setFoundedProduct(found);
-      setQuantity('1,00'); // Default to 1.00 when found
+      if (digitarQtdMode) {
+        setFoundedProduct(found);
+        setQuantity('1,00'); // Default to 1.00 when found
+      } else {
+        try {
+          const newItem: InventoryItem = {
+            id_app: generateAppId(),
+            inventario_id_app: selectedInventory.id_app,
+            produto_id_app: found.id_app,
+            produto_referencia: found.referencia,
+            qtdade: 1,
+            date_update: new Date().toISOString()
+          };
+          await dbService.saveInventoryItem(newItem);
+          const updated = await dbService.getInventoryItems(selectedInventory.id_app);
+          setItems(updated);
+          addToast(`Item "${found.descricao}" adicionado (Qtd: 1)`, 'success');
+          setBarcode('');
+          setFoundedProduct(null);
+        } catch (err: any) {
+          addToast('Erro ao salvar item', 'error', err.message || String(err));
+        }
+      }
     } else {
       addToast('Produto não localizado.', 'error');
     }
-  }, [products, addToast]);
+  }, [products, digitarQtdMode, selectedInventory, addToast]);
 
   useEffect(() => {
     if (selectedInventory) {
@@ -689,16 +713,34 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
                 onChange={(e) => setBarcode(e.target.value)}
               />
               <button 
+                type="button"
                 onClick={() => handleSearch(barcode)}
                 className="bg-slate-900 text-white p-3 rounded active:bg-slate-800 transition-colors"
               >
                 <Search className="w-5 h-5" />
               </button>
               <button 
+                type="button"
                 onClick={() => setScanActive(true)}
                 className="bg-blue-600 text-white p-3 rounded active:bg-blue-700 transition-colors"
               >
                 <Barcode className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between mt-3 pt-2.5 border-t border-slate-100">
+              <span className="text-[10px] uppercase font-black text-slate-400 tracking-wider">Lançamento por Código:</span>
+              <button
+                type="button"
+                onClick={() => setDigitarQtdMode(!digitarQtdMode)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider transition-all duration-200 border ${
+                  digitarQtdMode
+                    ? 'bg-blue-50 border-blue-200 text-blue-600 shadow-sm'
+                    : 'bg-slate-100 border-slate-200 text-slate-500 hover:bg-slate-200'
+                }`}
+              >
+                <Keyboard className="w-3.5 h-3.5" />
+                <span>{digitarQtdMode ? "Digitar Quantidade" : "Auto Lançar Qtd 1"}</span>
               </button>
             </div>
           </div>
@@ -792,25 +834,36 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
               </span>
             </div>
             <div className="flex flex-col">
-              {items.map((it: InventoryItem) => (
-                <div key={it.id_app} className="bg-white p-4 border-b border-slate-100 flex justify-between items-center">
-                   <div className="flex items-center gap-4">
-                     <div className="w-8 h-8 rounded bg-slate-50 border border-slate-100 flex items-center justify-center font-black text-blue-600 text-xs">
-                        {it.qtdade}
+              {items.map((it: InventoryItem) => {
+                const prod = products.find(p => p.id_app === it.produto_id_app || p.referencia === it.produto_referencia);
+                const descricao = prod ? prod.descricao : '';
+                return (
+                  <div key={it.id_app} className="bg-white p-4 border-b border-slate-100 flex justify-between items-center">
+                     <div className="flex items-center gap-4 min-w-0">
+                       <div className="w-8 h-8 rounded bg-slate-50 border border-slate-100 flex items-center justify-center font-black text-blue-600 text-xs shrink-0">
+                          {it.qtdade}
+                       </div>
+                       <div className="min-w-0">
+                         <div className="flex flex-wrap items-baseline gap-x-2">
+                           <span className="font-bold text-slate-800 uppercase text-sm tracking-tight">{it.produto_referencia}</span>
+                           {descricao && (
+                             <span className="text-xs font-semibold text-slate-500 uppercase truncate">
+                               - {descricao}
+                             </span>
+                           )}
+                         </div>
+                         <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">{formatDateTime(it.date_update)}</p>
+                       </div>
                      </div>
-                     <div>
-                       <span className="font-bold text-slate-800 uppercase text-sm tracking-tight">{it.produto_referencia}</span>
-                       <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">{formatDateTime(it.date_update)}</p>
-                     </div>
-                   </div>
-                   <button 
-                     onClick={() => handleDeleteItem(it.id_app)}
-                     className="p-2 text-slate-300 hover:text-red-500 active:scale-90 transition-all"
-                   >
-                      <Trash2 className="w-4 h-4" />
-                   </button>
-                </div>
-              ))}
+                     <button 
+                       onClick={() => handleDeleteItem(it.id_app)}
+                       className="p-2 text-slate-300 hover:text-red-500 active:scale-90 transition-all shrink-0"
+                     >
+                        <Trash2 className="w-4 h-4" />
+                     </button>
+                  </div>
+                );
+              })}
               {items.length === 0 && !foundedProduct && (
                 <div className="bg-slate-100/50 border border-dashed border-slate-200 py-10 text-center text-slate-400 font-bold uppercase tracking-widest text-[10px]">
                   Sem lançamentos
