@@ -1,16 +1,30 @@
 import { NextRequest, NextResponse } from 'next/server';
 import mysql from 'mysql2/promise';
 
+export async function GET() {
+  return NextResponse.json({
+    host: process.env.MYSQL_HOST || '',
+    port: process.env.MYSQL_PORT || '3306',
+    database: process.env.MYSQL_DATABASE || ''
+  });
+}
+
 export async function POST(req: NextRequest) { 
   try {
     const body = await req.json();
     const { config, action, data } = body;
 
-    if (!config.host || !config.database) {
+    const host = config.host || process.env.MYSQL_HOST || '';
+    const port = parseInt(config.port || process.env.MYSQL_PORT || '3306');
+    const user = process.env.MYSQL_USER || '';
+    const password = process.env.MYSQL_PASSWORD || '';
+    const database = config.database || process.env.MYSQL_DATABASE || '';
+
+    if (!host || !database) {
       return NextResponse.json({ error: 'Configurações de host e banco de dados são obrigatórias' }, { status: 400 });
     }
 
-    if (config.host === 'localhost' || config.host === '127.0.0.1') {
+    if (host === 'localhost' || host === '127.0.0.1') {
        return NextResponse.json({ 
          error: 'Conexão falhou: "localhost" não é acessível pelo servidor. Use o IP real do servidor MySQL ou um Host DNS público.' 
        }, { status: 400 });
@@ -20,11 +34,11 @@ export async function POST(req: NextRequest) {
     let connection;
     try {
       connection = await mysql.createConnection({
-        host: config.host,
-        port: parseInt(config.port || '3306'),
-        user: config.user,
-        password: config.password,
-        database: config.database,
+        host,
+        port,
+        user,
+        password,
+        database,
         connectTimeout: 20000, // 20 seconds timeout
         ssl: {
           rejectUnauthorized: false // Often needed for cloud MySQL
@@ -115,32 +129,189 @@ export async function POST(req: NextRequest) {
         }
       };
 
-      // Upload local data to MySQL
-      for (const p of localProducts) {
-        await connection.execute(
-          'INSERT INTO app_produtos (id_app, id_bm, referencia, descricao, marca, date_update) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE id_bm=VALUES(id_bm), referencia=VALUES(referencia), descricao=VALUES(descricao), marca=VALUES(marca), date_update=VALUES(date_update)',
-          [p.id_app, p.id_bm, p.referencia, p.descricao, p.marca, formatToMySQL(p.date_update)]
-        );
-      }
-      
-      for (const i of localInventories) {
-        await connection.execute(
-          'INSERT INTO app_inventarios (id_app, data, date_update, ativo) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE data=VALUES(data), date_update=VALUES(date_update), ativo=VALUES(ativo)',
-          [i.id_app, formatDateOnly(i.data), formatToMySQL(i.date_update), i.ativo || 'S']
-        );
+      const getEpochSec = (val: any): number => {
+        if (!val) return 0;
+        try {
+          const d = new Date(val);
+          const t = d.getTime();
+          return isNaN(t) ? 0 : Math.floor(t / 1000);
+        } catch (e) {
+          return 0;
+        }
+      };
+
+      const mapProductRow = (row: any) => ({
+        id_app: row.id_app,
+        id_bm: Number(row.id_bm || 0),
+        referencia: row.referencia || '',
+        descricao: row.descricao || '',
+        marca: row.marca || '',
+        date_update: row.date_update instanceof Date ? row.date_update.toISOString() : (row.date_update || new Date().toISOString())
+      });
+
+      const mapInventoryRow = (row: any) => ({
+        id_app: row.id_app,
+        data: row.data instanceof Date ? row.data.toISOString().split('T')[0] : (row.data || new Date().toISOString().split('T')[0]),
+        date_update: row.date_update instanceof Date ? row.date_update.toISOString() : (row.date_update || new Date().toISOString()),
+        ativo: row.ativo || 'S'
+      });
+
+      const mapItemRow = (row: any) => ({
+        id_app: row.id_app,
+        inventario_id_app: row.inventario_id_app || '',
+        produto_id_app: row.produto_id_app || '',
+        produto_referencia: row.produto_referencia || '',
+        qtdade: Number(row.qtdade || 0),
+        date_update: row.date_update instanceof Date ? row.date_update.toISOString() : (row.date_update || new Date().toISOString()),
+        ativo: row.ativo || 'S'
+      });
+
+      // --- Sync Products ---
+      const [dbProductsRaw]: any = await connection.execute('SELECT * FROM app_produtos');
+      const dbProducts = dbProductsRaw.map(mapProductRow);
+
+      const dbProductsMap = new Map<string, any>();
+      for (const p of dbProducts) dbProductsMap.set(p.id_app, p);
+
+      const localProductsMap = new Map<string, any>();
+      for (const p of localProducts || []) localProductsMap.set(p.id_app, p);
+
+      const allProductIds = new Set<string>([
+        ...Array.from(localProductsMap.keys()),
+        ...Array.from(dbProductsMap.keys())
+      ]);
+
+      const finalProducts: any[] = [];
+
+      for (const id of allProductIds) {
+        const local = localProductsMap.get(id);
+        const mysqlRow = dbProductsMap.get(id);
+
+        if (local && !mysqlRow) {
+          // Send to MySQL (Not found in mysql)
+          await connection.execute(
+            'INSERT INTO app_produtos (id_app, id_bm, referencia, descricao, marca, date_update) VALUES (?, ?, ?, ?, ?, ?)',
+            [local.id_app, local.id_bm, local.referencia, local.descricao, local.marca, formatToMySQL(local.date_update)]
+          );
+          finalProducts.push(local);
+        } else if (local && mysqlRow) {
+          const localTime = getEpochSec(local.date_update);
+          const mysqlTime = getEpochSec(mysqlRow.date_update);
+
+          if (localTime > mysqlTime) {
+            // Local is newer -> Update MySQL
+            await connection.execute(
+              'UPDATE app_produtos SET id_bm=?, referencia=?, descricao=?, marca=?, date_update=? WHERE id_app=?',
+              [local.id_bm, local.referencia, local.descricao, local.marca, formatToMySQL(local.date_update), local.id_app]
+            );
+            finalProducts.push(local);
+          } else {
+            // MySQL is newer or equal -> Keep MySQL
+            finalProducts.push(mysqlRow);
+          }
+        } else if (!local && mysqlRow) {
+          // Keep MySQL row
+          finalProducts.push(mysqlRow);
+        }
       }
 
-      for (const it of localItems) {
-        await connection.execute(
-          'INSERT INTO app_inventarios_produtos (id_app, inventario_id_app, produto_id_app, produto_referencia, qtdade, date_update, ativo) VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE inventario_id_app=VALUES(inventario_id_app), produto_id_app=VALUES(produto_id_app), produto_referencia=VALUES(produto_referencia), qtdade=VALUES(qtdade), date_update=VALUES(date_update), ativo=VALUES(ativo)',
-          [it.id_app, it.inventario_id_app, it.produto_id_app, it.produto_referencia, it.qtdade, formatToMySQL(it.date_update), it.ativo || 'S']
-        );
+      // --- Sync Inventories ---
+      const [dbInventoriesRaw]: any = await connection.execute('SELECT * FROM app_inventarios');
+      const dbInventories = dbInventoriesRaw.map(mapInventoryRow);
+
+      const dbInventoriesMap = new Map<string, any>();
+      for (const i of dbInventories) dbInventoriesMap.set(i.id_app, i);
+
+      const localInventoriesMap = new Map<string, any>();
+      for (const i of localInventories || []) localInventoriesMap.set(i.id_app, i);
+
+      const allInventoryIds = new Set<string>([
+        ...Array.from(localInventoriesMap.keys()),
+        ...Array.from(dbInventoriesMap.keys())
+      ]);
+
+      const finalInventories: any[] = [];
+
+      for (const id of allInventoryIds) {
+        const local = localInventoriesMap.get(id);
+        const mysqlRow = dbInventoriesMap.get(id);
+
+        if (local && !mysqlRow) {
+          // Send to MySQL (Not found)
+          await connection.execute(
+            'INSERT INTO app_inventarios (id_app, data, date_update, ativo) VALUES (?, ?, ?, ?)',
+            [local.id_app, formatDateOnly(local.data), formatToMySQL(local.date_update), local.ativo || 'S']
+          );
+          finalInventories.push(local);
+        } else if (local && mysqlRow) {
+          const localTime = getEpochSec(local.date_update);
+          const mysqlTime = getEpochSec(mysqlRow.date_update);
+
+          if (localTime > mysqlTime) {
+            // Local is newer -> Update MySQL
+            await connection.execute(
+              'UPDATE app_inventarios SET data=?, date_update=?, ativo=? WHERE id_app=?',
+              [formatDateOnly(local.data), formatToMySQL(local.date_update), local.ativo || 'S', local.id_app]
+            );
+            finalInventories.push(local);
+          } else {
+            // MySQL is newer or equal -> Keep MySQL
+            finalInventories.push(mysqlRow);
+          }
+        } else if (!local && mysqlRow) {
+          // Keep MySQL row
+          finalInventories.push(mysqlRow);
+        }
       }
 
-      // Re-fetch everything to send back to client
-      const [finalProducts]: any = await connection.execute('SELECT * FROM app_produtos');
-      const [finalInventories]: any = await connection.execute('SELECT * FROM app_inventarios');
-      const [finalItems]: any = await connection.execute('SELECT * FROM app_inventarios_produtos');
+      // --- Sync Items ---
+      const [dbItemsRaw]: any = await connection.execute('SELECT * FROM app_inventarios_produtos');
+      const dbItems = dbItemsRaw.map(mapItemRow);
+
+      const dbItemsMap = new Map<string, any>();
+      for (const it of dbItems) dbItemsMap.set(it.id_app, it);
+
+      const localItemsMap = new Map<string, any>();
+      for (const it of localItems || []) localItemsMap.set(it.id_app, it);
+
+      const allItemIds = new Set<string>([
+        ...Array.from(localItemsMap.keys()),
+        ...Array.from(dbItemsMap.keys())
+      ]);
+
+      const finalItems: any[] = [];
+
+      for (const id of allItemIds) {
+        const local = localItemsMap.get(id);
+        const mysqlRow = dbItemsMap.get(id);
+
+        if (local && !mysqlRow) {
+          // Send to MySQL (Not found)
+          await connection.execute(
+            'INSERT INTO app_inventarios_produtos (id_app, inventario_id_app, produto_id_app, produto_referencia, qtdade, date_update, ativo) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [local.id_app, local.inventario_id_app, local.produto_id_app, local.produto_referencia, local.qtdade, formatToMySQL(local.date_update), local.ativo || 'S']
+          );
+          finalItems.push(local);
+        } else if (local && mysqlRow) {
+          const localTime = getEpochSec(local.date_update);
+          const mysqlTime = getEpochSec(mysqlRow.date_update);
+
+          if (localTime > mysqlTime) {
+            // Local is newer -> Update MySQL
+            await connection.execute(
+              'UPDATE app_inventarios_produtos SET inventario_id_app=?, produto_id_app=?, produto_referencia=?, qtdade=?, date_update=?, ativo=? WHERE id_app=?',
+              [local.inventario_id_app, local.produto_id_app, local.produto_referencia, local.qtdade, formatToMySQL(local.date_update), local.ativo || 'S', local.id_app]
+            );
+            finalItems.push(local);
+          } else {
+            // MySQL is newer or equal -> Keep MySQL
+            finalItems.push(mysqlRow);
+          }
+        } else if (!local && mysqlRow) {
+          // Keep MySQL row
+          finalItems.push(mysqlRow);
+        }
+      }
 
       await connection.end();
       return NextResponse.json({ 

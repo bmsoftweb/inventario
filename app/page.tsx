@@ -11,6 +11,7 @@ import {
   Plus, 
   Edit, 
   Type, 
+  X,
   ArrowLeft,
   Barcode,
   Save,
@@ -20,7 +21,9 @@ import {
   Clock,
   ChevronRight,
   Trash2,
-  Keyboard
+  Keyboard,
+  Camera,
+  Sparkles
 } from 'lucide-react';
 import { dbService, generateAppId, Product, Inventory, InventoryItem } from '@/lib/db';
 import { Html5QrcodeScanner, Html5Qrcode } from 'html5-qrcode';
@@ -488,6 +491,96 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [digitarQtdMode, setDigitarQtdMode] = useState<boolean>(false);
 
+  // --- Captura Conjunto States ---
+  const [capturaConjuntoOpen, setCapturaConjuntoOpen] = useState(false);
+  const [capturaProductType, setCapturaProductType] = useState('');
+  const [capturaSelectedProduct, setCapturaSelectedProduct] = useState<Product | null>(null);
+  const [capturaImageBase64, setCapturaImageBase64] = useState<string>('');
+  const [capturaMimeType, setCapturaMimeType] = useState<string>('');
+  const [capturaLoading, setCapturaLoading] = useState(false);
+  const [capturaCountResult, setCapturaCountResult] = useState<number | null>(null);
+  const [capturaReasoning, setCapturaReasoning] = useState<string | null>(null);
+  const [capturaFinalQty, setCapturaFinalQty] = useState<string>('0,00');
+
+  const handleCapturaQtyChange = (val: string) => {
+    const numeric = parseBankInput(val);
+    setCapturaFinalQty(formatCurrency(numeric));
+  };
+
+  const handleAiCount = async () => {
+    if (!capturaImageBase64 || !capturaProductType) return;
+
+    setCapturaLoading(true);
+    setCapturaCountResult(null);
+    setCapturaReasoning(null);
+
+    try {
+      const response = await fetch("/api/gemini/count", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          image: capturaImageBase64,
+          mimeType: capturaMimeType || "image/jpeg",
+          productDescription: capturaProductType
+        })
+      });
+
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || "Erro de servidor ao processar imagem");
+      }
+
+      const data = await response.json();
+      setCapturaCountResult(data.count);
+      setCapturaReasoning(data.reasoning);
+      setCapturaFinalQty(formatCurrency(data.count));
+
+    } catch (err: any) {
+      console.error(err);
+      addToast(err.message || 'Erro ao contar produtos com a IA.', 'error');
+    } finally {
+      setCapturaLoading(false);
+    }
+  };
+
+  const handleConfirmCapturaCount = async () => {
+    if (!capturaSelectedProduct || !selectedInventory || !capturaFinalQty) return;
+
+    try {
+      const numericQtd = parseBankInput(capturaFinalQty);
+      if (numericQtd <= 0) {
+        addToast('Quantidade deve ser maior que zero.', 'error');
+        return;
+      }
+
+      const newItem: InventoryItem = {
+        id_app: generateAppId(),
+        inventario_id_app: selectedInventory.id_app,
+        produto_id_app: capturaSelectedProduct.id_app,
+        produto_referencia: capturaSelectedProduct.referencia,
+        qtdade: numericQtd,
+        date_update: new Date().toISOString()
+      };
+
+      await dbService.saveInventoryItem(newItem);
+      const updated = await dbService.getInventoryItems(selectedInventory.id_app);
+      setItems(updated);
+
+      // Reset and close
+      setCapturaConjuntoOpen(false);
+      setCapturaSelectedProduct(null);
+      setCapturaProductType('');
+      setCapturaImageBase64('');
+      setCapturaCountResult(null);
+      setCapturaReasoning(null);
+      setCapturaFinalQty('0,00');
+
+      addToast(`Contagem de "${capturaSelectedProduct.descricao}" salva com sucesso!`, 'success');
+    } catch (err: any) {
+      addToast('Erro ao gravar contagem', 'error', err.message || String(err));
+    }
+  };
+
   const handleSearch = useCallback(async (code: string) => {
     if (!code) return;
     const found = products.find((p: Product) => p.referencia === code);
@@ -723,8 +816,17 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
                 type="button"
                 onClick={() => setScanActive(true)}
                 className="bg-blue-600 text-white p-3 rounded active:bg-blue-700 transition-colors"
+                title="Escanear Código de Barras"
               >
                 <Barcode className="w-5 h-5" />
+              </button>
+              <button 
+                type="button"
+                onClick={() => setCapturaConjuntoOpen(true)}
+                className="bg-emerald-600 text-white p-3 rounded active:bg-emerald-700 transition-colors"
+                title="Captura Conjunto"
+              >
+                <Camera className="w-5 h-5" />
               </button>
             </div>
 
@@ -873,6 +975,219 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
           </div>
         </div>
       </div>
+
+      {/* --- Captura Conjunto Modal --- */}
+      <AnimatePresence>
+        {capturaConjuntoOpen && (
+          <motion.div 
+            initial={{ opacity: 0 }} 
+            animate={{ opacity: 1 }} 
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-xl z-50 flex items-end sm:items-center justify-center p-4 overflow-y-auto"
+          >
+            <motion.div 
+              initial={{ y: 50, opacity: 0 }} 
+              animate={{ y: 0, opacity: 1 }} 
+              exit={{ y: 50, opacity: 0 }}
+              className="bg-white rounded-t-3xl sm:rounded-3xl p-6 w-full max-w-md shadow-2xl flex flex-col gap-4 border border-slate-100 my-auto"
+            >
+              <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+                <div>
+                  <h3 className="font-black text-slate-800 uppercase tracking-widest text-xs flex items-center gap-1.5">
+                    <Sparkles className="w-4 h-4 text-emerald-500 animate-pulse" /> Captura Conjunto
+                  </h3>
+                  <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">Contagem múltipla inteligente com IA</p>
+                </div>
+                <button 
+                  type="button"
+                  onClick={() => {
+                    setCapturaConjuntoOpen(false);
+                    setCapturaSelectedProduct(null);
+                    setCapturaProductType('');
+                    setCapturaImageBase64('');
+                    setCapturaCountResult(null);
+                    setCapturaReasoning(null);
+                    setCapturaFinalQty('0,00');
+                  }}
+                  className="p-1.5 text-slate-400 hover:text-slate-600 active:scale-95 transition-all rounded-full bg-slate-50 border border-slate-100 shrink-0"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Product selection */}
+              <div>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5">1. Selecione o Produto no Estoque</label>
+                <select
+                  className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 text-xs font-bold rounded focus:outline-none focus:ring-1 focus:ring-emerald-500 text-slate-800"
+                  value={capturaSelectedProduct ? capturaSelectedProduct.id_app : ''}
+                  onChange={(e) => {
+                    const found = products.find(p => p.id_app === e.target.value);
+                    if (found) {
+                      setCapturaSelectedProduct(found);
+                      setCapturaProductType(found.descricao);
+                    } else {
+                      setCapturaSelectedProduct(null);
+                      setCapturaProductType('');
+                    }
+                  }}
+                >
+                  <option value="">-- Escolha o produto cadastrado --</option>
+                  {products.map(p => (
+                    <option key={p.id_app} value={p.id_app}>
+                      [{p.referencia}] {p.descricao}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Product description / category prompt */}
+              <div>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5">2. O que o robô deve contar? (Tipo de Produto)</label>
+                <input
+                  type="text"
+                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 text-xs font-bold rounded focus:outline-none focus:ring-1 focus:ring-emerald-500 text-slate-805 uppercase"
+                  placeholder="Ex: camiseta, caixa, garrafa, etc."
+                  value={capturaProductType}
+                  onChange={(e) => setCapturaProductType(e.target.value)}
+                />
+              </div>
+
+              {/* Camera Upload / Capture Container */}
+              <div>
+                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5">3. Tirar Foto do Conjunto</label>
+                <div 
+                  className="border-2 border-dashed border-slate-200 rounded-2xl p-4 text-center bg-slate-50/50 hover:bg-slate-50 hover:border-slate-300 transition-all relative flex flex-col items-center justify-center min-h-[140px] cursor-pointer" 
+                  onClick={() => document.getElementById('camera-file-input')?.click()}
+                >
+                  <input 
+                    type="file" 
+                    id="camera-file-input" 
+                    accept="image/*" 
+                    capture="environment" 
+                    className="hidden" 
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        setCapturaMimeType(file.type || 'image/jpeg');
+                        const reader = new FileReader();
+                        reader.onload = () => {
+                          setCapturaImageBase64(reader.result as string);
+                        };
+                        reader.readAsDataURL(file);
+                      }
+                    }}
+                  />
+                  {capturaImageBase64 ? (
+                    <div className="relative w-full max-h-[160px] rounded-lg overflow-hidden flex justify-center bg-black">
+                      <img src={capturaImageBase64} alt="Suporte Contagem" className="object-contain h-[160px]" />
+                      <button 
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setCapturaImageBase64('');
+                        }}
+                        className="absolute top-2 right-2 bg-red-600 text-white rounded-full p-1 shadow-md hover:bg-red-700 active:scale-90 transition-all"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center gap-2 py-4">
+                      <div className="w-10 h-10 rounded-full bg-emerald-50 border border-emerald-100 flex items-center justify-center text-emerald-600">
+                        <Camera className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <p className="text-xs font-black text-slate-600 uppercase tracking-widest">Usar Câmera do Celular</p>
+                        <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">Toque para tirar foto ou carregar arquivo</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Submit AI analysis */}
+              <button
+                type="button"
+                disabled={!capturaImageBase64 || !capturaProductType || capturaLoading}
+                onClick={handleAiCount}
+                className={`w-full py-2.5 rounded text-xs font-black uppercase tracking-widest flex items-center justify-center gap-1.5 transition-all ${
+                  !capturaImageBase64 || !capturaProductType || capturaLoading
+                    ? 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200'
+                    : 'bg-emerald-600 text-white hover:bg-emerald-700 active:scale-[0.98]'
+                }`}
+              >
+                {capturaLoading ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                    <span>Contando Peças...</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-4 h-4" />
+                    <span>Contar com Inteligência Artificial</span>
+                  </>
+                )}
+              </button>
+
+              {/* Response of AI evaluation */}
+              {capturaCountResult !== null && (
+                <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl">
+                  <div className="flex items-start gap-2.5">
+                    <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5 animate-bounce" />
+                    <div className="flex-1">
+                      <p className="text-[10px] font-black text-emerald-800 uppercase tracking-widest">IA Contou: {capturaCountResult} unidade(s)</p>
+                      {capturaReasoning && (
+                        <p className="text-[10px] text-emerald-700 border-t border-emerald-200/50 pt-1 mt-1 font-bold leading-snug uppercase tracking-wide">{capturaReasoning}</p>
+                      )}
+                      
+                      <div className="mt-3 pt-3 border-t border-emerald-200/50">
+                        <label className="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5">Confirmar Quantidade Identificada</label>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          className="w-full bg-white border border-emerald-300 text-slate-900 rounded px-3 py-2 text-xl font-black outline-none focus:ring-1 focus:ring-emerald-500"
+                          value={capturaFinalQty}
+                          onChange={(e) => handleCapturaQtyChange(e.target.value)}
+                        />
+                        <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1">Ajuste o valor acima se o cálculo conter desvios.</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Close/Acknowledge buttons */}
+              <div className="flex gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCapturaConjuntoOpen(false);
+                    setCapturaSelectedProduct(null);
+                    setCapturaProductType('');
+                    setCapturaImageBase64('');
+                    setCapturaCountResult(null);
+                    setCapturaReasoning(null);
+                    setCapturaFinalQty('0,00');
+                  }}
+                  className="flex-1 border border-slate-200 text-slate-600 py-3 rounded text-[10px] font-black uppercase tracking-widest active:bg-slate-100 transition-all font-sans"
+                >
+                  Cancelar
+                </button>
+                {capturaCountResult !== null && capturaSelectedProduct && (
+                  <button
+                    type="button"
+                    onClick={handleConfirmCapturaCount}
+                    className="flex-1 bg-slate-900 text-white hover:bg-slate-800 py-3 rounded text-[10px] font-black uppercase tracking-widest transition-all font-sans"
+                  >
+                    Confirmar e Gravar
+                  </button>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };
@@ -887,16 +1202,44 @@ const SincronizarScreen = ({ onBack, onSyncSuccess, addToast }: SincronizarScree
   const [config, setConfig] = useState(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('mysql_config');
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          return {
+            host: parsed.host || '',
+            port: parsed.port || '3306',
+            database: parsed.database || ''
+          };
+        } catch (e) {}
+      }
     }
     return {
       host: '',
       port: '3306',
-      user: '',
-      password: '',
       database: ''
     };
   });
+
+  useEffect(() => {
+    let active = true;
+    fetch('/api/sync')
+      .then(res => res.json())
+      .then(data => {
+        if (!active) return;
+        setConfig((prev: any) => ({
+          host: prev.host || data.host || '',
+          port: prev.port || data.port || '3306',
+          database: prev.database || data.database || ''
+        }));
+      })
+      .catch(err => {
+        console.warn('Erro ao carregar configurações padrão do MySQL:', err);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const [status, setStatus] = useState<{ type: 'idle' | 'loading' | 'success' | 'error', message?: string }>({ type: 'idle' });
 
   const handleSaveConfig = () => {
@@ -988,9 +1331,6 @@ const SincronizarScreen = ({ onBack, onSyncSuccess, addToast }: SincronizarScree
                 </div>
                 <Input label="Port" value={config.port} onChange={v => setConfig({...config, port: v})} />
               </div>
-              <Input label="Usuário" value={config.user} onChange={v => setConfig({...config, user: v})} />
-              <Input label="Senha" type="password" value={config.password} onChange={v => setConfig({...config, password: v})} />
-              
               <button 
                 onClick={handleSaveConfig}
                 className="mt-2 text-white bg-slate-900 py-3 rounded font-bold uppercase tracking-widest text-[10px] shadow active:bg-slate-800 transition-all"
