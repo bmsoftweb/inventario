@@ -105,13 +105,11 @@ export async function POST(req: NextRequest) {
           referencia varchar(25) DEFAULT '',
           descricao varchar(255) DEFAULT '',
           marca varchar(25) DEFAULT '',
-          foto longblob DEFAULT NULL,
           ativo char(1) DEFAULT 'S',
           PRIMARY KEY (id_app)
         )
       `);
       await ensureColumn('app_produtos', 'id_bm_produtosprincipal', 'int DEFAULT 0');
-      await ensureColumn('app_produtos', 'foto', 'longblob DEFAULT NULL');
       await ensureColumn('app_produtos', 'ativo', "char(1) DEFAULT 'S'");
       
       await connection.end();
@@ -156,28 +154,7 @@ export async function POST(req: NextRequest) {
         }
       };
 
-      const getBufferFromBase64 = (base64Str: string | null | undefined) => {
-        if (!base64Str) return null;
-        try {
-          const clean = base64Str.includes(';base64,') ? base64Str.split(';base64,').pop() : base64Str;
-          return Buffer.from(clean || '', 'base64');
-        } catch (e) {
-          return null;
-        }
-      };
-
       const mapProductRow = (row: any) => {
-        let base64Foto: string | null = null;
-        if (row.foto) {
-          if (Buffer.isBuffer(row.foto)) {
-            const rawB64 = row.foto.toString('base64');
-            base64Foto = rawB64.startsWith('data:') ? rawB64 : `data:image/jpeg;base64,${rawB64}`;
-          } else if (typeof row.foto === 'string') {
-            const rawStr = row.foto;
-            base64Foto = rawStr.startsWith('data:') ? rawStr : `data:image/jpeg;base64,${rawStr}`;
-          }
-        }
-
         return {
           id_app: row.id_app,
           id_bm: Number(row.id_bm || 0),
@@ -185,7 +162,6 @@ export async function POST(req: NextRequest) {
           referencia: row.referencia || '',
           descricao: row.descricao || '',
           marca: row.marca || '',
-          foto: base64Foto,
           ativo: row.ativo || 'S',
           date_update: row.date_update instanceof Date ? row.date_update.toISOString() : (row.date_update || new Date().toISOString())
         };
@@ -240,7 +216,7 @@ export async function POST(req: NextRequest) {
 
             if (local && !mysqlRow) {
               await connection!.execute(
-                'INSERT INTO app_produtos (id_app, id_bm, id_bm_produtosprincipal, referencia, descricao, marca, ativo, foto, date_update) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                'INSERT INTO app_produtos (id_app, id_bm, id_bm_produtosprincipal, referencia, descricao, marca, ativo, date_update) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
                 [
                   local.id_app,
                   local.id_bm || 0,
@@ -249,7 +225,6 @@ export async function POST(req: NextRequest) {
                   local.descricao || '',
                   local.marca || '',
                   local.ativo || 'S',
-                  getBufferFromBase64(local.foto),
                   formatToMySQL(local.date_update)
                 ]
               );
@@ -260,7 +235,7 @@ export async function POST(req: NextRequest) {
 
               if (localTime > mysqlTime) {
                 await connection!.execute(
-                  'UPDATE app_produtos SET id_bm=?, id_bm_produtosprincipal=?, referencia=?, descricao=?, marca=?, ativo=?, foto=?, date_update=? WHERE id_app=?',
+                  'UPDATE app_produtos SET id_bm=?, id_bm_produtosprincipal=?, referencia=?, descricao=?, marca=?, ativo=?, date_update=? WHERE id_app=?',
                   [
                     local.id_bm || 0,
                     local.id_bm_produtosprincipal || 0,
@@ -268,7 +243,6 @@ export async function POST(req: NextRequest) {
                     local.descricao || '',
                     local.marca || '',
                     local.ativo || 'S',
-                    getBufferFromBase64(local.foto),
                     formatToMySQL(local.date_update),
                     local.id_app
                   ]

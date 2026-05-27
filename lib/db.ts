@@ -33,7 +33,6 @@ export interface Product {
   referencia: string;
   descricao: string;
   marca: string;
-  foto?: string | null;
   ativo?: string;
 }
 
