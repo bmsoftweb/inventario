@@ -225,7 +225,7 @@ export default function Home() {
             const parsed = JSON.parse(saved);
             config = {
               host: parsed.host || '',
-              port: parsed.port || '3306',
+              port: '3306', // Hardcoded 3306
               database: parsed.database || ''
             };
           } catch (e) {}
@@ -239,7 +239,7 @@ export default function Home() {
           const dataDefault = await resDefault.json();
           config = {
             host: config.host || dataDefault.host || '',
-            port: config.port || dataDefault.port || '3306',
+            port: '3306',
             database: config.database || dataDefault.database || ''
           };
         } catch (err) {
@@ -251,6 +251,8 @@ export default function Home() {
       setSyncProgress(30);
       setSyncMessage('Coletando dados locais...');
       const localProducts = await dbService.getProducts();
+      // Em directSync (inventários apenas), localProducts é ignorado pelo servidor, 
+      // mas vamos enviar [] para garantir payload pequeno.
       const localInventories = await dbService.getInventoriesRaw();
       const allItems: InventoryItem[] = [];
       for (const inv of localInventories) {
@@ -261,15 +263,17 @@ export default function Home() {
       // 3. Enviar para API de Sincronização
       setSyncProgress(50);
       setSyncMessage('Sincronizando com o servidor...');
+      
+      // Sincronização de inventários apenas (geralmente pequena)
       const res = await fetch('/api/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           config,
           action: 'sync',
-          syncMode: 'inventories_only', // Mode for faster direct sync
+          syncMode: 'inventories_only', 
           data: {
-            localProducts: [], // Skip local products in this mode
+            localProducts: [], 
             localInventories,
             localItems: allItems
           }
@@ -352,7 +356,7 @@ export default function Home() {
               markAsDirty={markAsDirty}
             />
           )}
-          {currentScreen === 'sincronizar' && <SincronizarScreen onBack={() => setCurrentScreen('inventarios')} onSyncSuccess={loadData} addToast={addToast} />}
+          {currentScreen === 'sincronizar' && <SincronizarScreen onBack={() => setCurrentScreen('inventarios')} onSyncSuccess={loadData} addToast={addToast} needsSync={needsSync} markAsDirty={markAsDirty} showConfirm={showConfirm} />}
         </motion.div>
       </AnimatePresence>
 
@@ -1600,9 +1604,19 @@ interface SincronizarScreenProps {
   onBack: () => void;
   onSyncSuccess: () => void;
   addToast: (msg: string, type: 'success' | 'error', detail?: string) => void;
+  needsSync: boolean;
+  markAsDirty: (isDirty: boolean) => void;
+  showConfirm: (
+    title: string,
+    message: string,
+    onConfirm: () => void,
+    confirmText?: string,
+    confirmColorClassName?: string,
+    icon?: React.ReactNode
+  ) => void;
 }
 
-const SincronizarScreen = ({ onBack, onSyncSuccess, addToast }: SincronizarScreenProps) => {
+const SincronizarScreen = ({ onBack, onSyncSuccess, addToast, needsSync, markAsDirty, showConfirm }: SincronizarScreenProps) => {
   const [config, setConfig] = useState(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('mysql_config');
@@ -1688,6 +1702,40 @@ const SincronizarScreen = ({ onBack, onSyncSuccess, addToast }: SincronizarScree
       }
 
       setProgress(50);
+      
+      // IMPLEMENTAÇÃO DE CHUNKING PARA PRODUTOS (Para evitar erro 413 ou timeout)
+      const CHUNK_SIZE = 500;
+
+      if (action === 'sync') {
+        // Primeira etapa: Enviar produtos em chunks se houver muitos
+        if (localProducts.length > CHUNK_SIZE) {
+          for (let i = 0; i < localProducts.length; i += CHUNK_SIZE) {
+            const chunk = localProducts.slice(i, i + CHUNK_SIZE);
+            setStatus({ type: 'loading', message: `Enviando produtos (${i} a ${Math.min(i + CHUNK_SIZE, localProducts.length)} de ${localProducts.length})...` });
+            setProgress(50 + (i / localProducts.length) * 10);
+
+            const chunkRes = await fetch('/api/sync', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                config,
+                action: 'sync',
+                syncMode: 'products_push_only', // Custom mode to JUST push products
+                data: {
+                  localProducts: chunk,
+                  localInventories: [],
+                  localItems: []
+                }
+              })
+            });
+            if (!chunkRes.ok) throw new Error(`Erro no chunk de produtos: ${chunkRes.statusText}`);
+          }
+          // Agora limpa localProducts para o sync final para diminuir payload
+          localProducts.length = 0; 
+        }
+      }
+
+      setStatus({ type: 'loading', message: 'Sincronização final...' });
       const res = await fetch('/api/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1706,12 +1754,14 @@ const SincronizarScreen = ({ onBack, onSyncSuccess, addToast }: SincronizarScree
       if (result.success) {
         setProgress(70);
         if (action === 'sync') {
+          setStatus({ type: 'loading', message: 'Atualizando base local...' });
           await dbService.clearAll();
           for(const p of result.data.products) await dbService.saveProduct(p);
           setProgress(85);
           for(const i of result.data.inventories) await dbService.saveInventory(i);
           for(const it of result.data.items) await dbService.saveInventoryItem(it);
           onSyncSuccess();
+          markAsDirty(false);
         }
         setProgress(100);
         setStatus({ type: 'success', message: result.message || 'Operação concluída com sucesso!' });
@@ -1726,26 +1776,30 @@ const SincronizarScreen = ({ onBack, onSyncSuccess, addToast }: SincronizarScree
     }
   };
 
+  const handleClearLocal = async () => {
+    showConfirm(
+      'Limpar Base Local',
+      'ATENÇÃO: Isso apagará TODOS os dados do seu banco local (Produtos, Inventários e Lançamentos). Esta ação não pode ser desfeita. Deseja continuar?',
+      async () => {
+        try {
+          await dbService.clearAll();
+          markAsDirty(false);
+          onSyncSuccess();
+          addToast('Banco local limpo com sucesso!', 'success');
+        } catch (e: any) {
+          addToast('Falha ao limpar banco', 'error', e.message);
+        }
+      },
+      'SIM, APAGAR TUDO',
+      'bg-red-600',
+      <Trash2 className="w-6 h-6 text-red-500" />
+    );
+  };
+
   return (
     <div className="flex flex-col h-full bg-slate-50 overflow-hidden">
       <Header title="Sincronizar" onBack={onBack} />
       <div className="flex-1 overflow-y-auto">
-        {status.type === 'loading' && (
-          <div className="px-6 py-4 bg-white border-b border-slate-100 flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest animate-pulse">Processando...</span>
-              <span className="text-[10px] font-black text-blue-600 tracking-widest">{progress}%</span>
-            </div>
-            <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden border border-slate-50">
-              <motion.div 
-                className="h-full bg-blue-600 shadow-[0_0_8px_rgba(37,99,235,0.4)]"
-                initial={{ width: 0 }}
-                animate={{ width: `${progress}%` }}
-                transition={{ duration: 0.3 }}
-              />
-            </div>
-          </div>
-        )}
         <div className="flex flex-col">
           <div className="bg-white p-6 border-b border-slate-200 shadow-sm">
             <h3 className="font-bold text-slate-800 mb-6 flex items-center gap-2 uppercase tracking-tight text-sm">
@@ -1753,12 +1807,7 @@ const SincronizarScreen = ({ onBack, onSyncSuccess, addToast }: SincronizarScree
             </h3>
             <div className="flex flex-col gap-4">
               <Input label="Host Remoto" value={config.host} onChange={v => setConfig({...config, host: v})} />
-              <div className="grid grid-cols-3 gap-4">
-                <div className="col-span-2">
-                  <Input label="Database" value={config.database} onChange={v => setConfig({...config, database: v})} />
-                </div>
-                <Input label="Port" value={config.port} onChange={v => setConfig({...config, port: v})} />
-              </div>
+              <Input label="Database" value={config.database} onChange={v => setConfig({...config, database: v})} />
               <button 
                 onClick={handleSaveConfig}
                 className="mt-2 text-white bg-slate-900 py-3 rounded font-bold uppercase tracking-widest text-[10px] shadow active:bg-slate-800 transition-all"
@@ -1779,14 +1828,59 @@ const SincronizarScreen = ({ onBack, onSyncSuccess, addToast }: SincronizarScree
             </button>
 
             <button 
+              disabled={status.type === 'loading' || needsSync}
+              onClick={handleClearLocal}
+              className={`py-4 rounded font-bold uppercase tracking-widest text-xs flex flex-col items-center gap-1 shadow-sm transition-all border ${
+                needsSync 
+                  ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-60' 
+                  : 'bg-white border-red-100 text-red-600 active:bg-red-50'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <Trash2 className="w-4 h-4" />
+                LIMPAR BASE LOCAL
+              </div>
+              <span className="text-[9px] font-bold opacity-40 lowercase">Apaga todos os dados salvos no celular</span>
+              {needsSync && <span className="text-[8px] text-red-400 mt-1 uppercase">Sincronização Pendente</span>}
+            </button>
+
+            <button 
               disabled={status.type === 'loading'}
               onClick={() => runAction('sync')}
-              className="bg-blue-600 text-white py-6 rounded font-bold uppercase tracking-[0.2em] text-sm flex flex-col items-center gap-2 shadow-xl active:bg-blue-700 transition-all disabled:opacity-50"
+              className="bg-blue-600 text-white py-6 rounded font-bold uppercase tracking-[0.2em] text-sm flex flex-col items-center gap-2 shadow-xl active:bg-blue-700 transition-all disabled:opacity-50 mt-2"
             >
               <RefreshCcw className={`w-5 h-5 ${status.type === 'loading' ? 'animate-spin' : ''}`} />
               Sincronizar Agora
             </button>
           </div>
+
+          <AnimatePresence>
+            {status.type === 'loading' && (
+              <motion.div 
+                initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                className="fixed inset-0 z-[30000] bg-slate-900/90 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center"
+              >
+                <div className="relative mb-8">
+                  <div className="absolute inset-0 bg-blue-500/20 rounded-full blur-3xl animate-pulse" />
+                  <RefreshCcw className="w-10 h-10 text-blue-400 animate-spin" />
+                </div>
+                <h3 className="font-black text-white uppercase tracking-wider text-sm mb-2">Sincronizando Total</h3>
+                
+                <div className="w-full max-w-[200px] bg-slate-800 h-1.5 rounded-full mb-4 overflow-hidden border border-slate-700">
+                  <motion.div 
+                    className="h-full bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]"
+                    initial={{ width: 0 }}
+                    animate={{ width: `${progress}%` }}
+                    transition={{ duration: 0.3 }}
+                  />
+                </div>
+
+                <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest max-w-xs animate-pulse leading-relaxed">
+                  {status.message}
+                </p>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           {status.type !== 'idle' && (
             <motion.div 

@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
     const { config, action, data } = body;
 
     const host = config.host || process.env.MYSQL_HOST || '';
-    const port = parseInt(config.port || process.env.MYSQL_PORT || '3306');
+    const port = 3306; // Hardcoded to 3306 as requested
     const user = process.env.MYSQL_USER || '';
     const password = process.env.MYSQL_PASSWORD || '';
     const database = config.database || process.env.MYSQL_DATABASE || '';
@@ -131,6 +131,35 @@ export async function POST(req: NextRequest) {
           return null;
         }
       };
+
+      if (syncMode === 'products_push_only') {
+        for (const p of localProducts || []) {
+          await connection.execute(
+            `INSERT INTO app_produtos (id_app, id_bm, id_bm_produtosprincipal, referencia, descricao, marca, ativo, date_update) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?) 
+             ON DUPLICATE KEY UPDATE 
+               id_bm=VALUES(id_bm), 
+               id_bm_produtosprincipal=VALUES(id_bm_produtosprincipal), 
+               referencia=VALUES(referencia), 
+               descricao=VALUES(descricao), 
+               marca=VALUES(marca), 
+               ativo=VALUES(ativo), 
+               date_update=VALUES(date_update)`,
+            [
+              p.id_app,
+              p.id_bm || 0,
+              p.id_bm_produtosprincipal || 0,
+              p.referencia || '',
+              p.descricao || '',
+              p.marca || '',
+              p.ativo || 'S',
+              formatToMySQL(p.date_update)
+            ]
+          );
+        }
+        await connection.end();
+        return NextResponse.json({ success: true, message: 'Batch de produtos processado' });
+      }
 
       const formatDateOnly = (val: string) => {
         if (!val) return null;
