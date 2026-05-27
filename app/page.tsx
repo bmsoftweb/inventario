@@ -1703,36 +1703,10 @@ const SincronizarScreen = ({ onBack, onSyncSuccess, addToast, needsSync, markAsD
 
       setProgress(50);
       
-      // IMPLEMENTAÇÃO DE CHUNKING PARA PRODUTOS (Para evitar erro 413 ou timeout)
-      const CHUNK_SIZE = 500;
-
       if (action === 'sync') {
-        // Primeira etapa: Enviar produtos em chunks se houver muitos
-        if (localProducts.length > CHUNK_SIZE) {
-          for (let i = 0; i < localProducts.length; i += CHUNK_SIZE) {
-            const chunk = localProducts.slice(i, i + CHUNK_SIZE);
-            setStatus({ type: 'loading', message: `Enviando produtos (${i} a ${Math.min(i + CHUNK_SIZE, localProducts.length)} de ${localProducts.length})...` });
-            setProgress(50 + (i / localProducts.length) * 10);
-
-            const chunkRes = await fetch('/api/sync', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                config,
-                action: 'sync',
-                syncMode: 'products_push_only', // Custom mode to JUST push products
-                data: {
-                  localProducts: chunk,
-                  localInventories: [],
-                  localItems: []
-                }
-              })
-            });
-            if (!chunkRes.ok) throw new Error(`Erro no chunk de produtos: ${chunkRes.statusText}`);
-          }
-          // Agora limpa localProducts para o sync final para diminuir payload
-          localProducts.length = 0; 
-        }
+        // Produtos agora são apenas puxados do servidor, 
+        // então não precisamos mais enviar em chunks para o MySQL.
+        localProducts.length = 0; // Garante payload pequeno no sync final
       }
 
       setStatus({ type: 'loading', message: 'Sincronização final...' });
