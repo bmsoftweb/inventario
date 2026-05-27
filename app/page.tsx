@@ -1693,23 +1693,22 @@ const SincronizarScreen = ({ onBack, onSyncSuccess, addToast, needsSync, markAsD
       }
       
       setProgress(40);
-      const localProducts = await dbService.getProducts();
-      const localInventories = await dbService.getInventoriesRaw();
-      const allItems: InventoryItem[] = [];
-      for(const inv of localInventories) {
-        const items = await dbService.getInventoryItemsRaw(inv.id_app);
-        allItems.push(...items);
+      let localProducts: any[] = [];
+      let localInventories: any[] = [];
+      let allItems: InventoryItem[] = [];
+
+      if (action === 'sync') {
+        localProducts = []; // Produtos agora são apenas puxados do servidor
+        localInventories = await dbService.getInventoriesRaw();
+        for (const inv of localInventories) {
+          const items = await dbService.getInventoryItemsRaw(inv.id_app);
+          allItems.push(...items);
+        }
       }
 
       setProgress(50);
       
-      if (action === 'sync') {
-        // Produtos agora são apenas puxados do servidor, 
-        // então não precisamos mais enviar em chunks para o MySQL.
-        localProducts.length = 0; // Garante payload pequeno no sync final
-      }
-
-      setStatus({ type: 'loading', message: 'Sincronização final...' });
+      setStatus({ type: 'loading', message: action === 'create_base' ? 'Verificando estruturas...' : 'Sincronização final...' });
       const res = await fetch('/api/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
