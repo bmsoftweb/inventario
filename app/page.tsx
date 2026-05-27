@@ -142,6 +142,22 @@ export default function Home() {
     }
     return false;
   });
+  const [syncProgress, setSyncProgress] = useState(0);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      // Request persistent storage
+      if (navigator.storage && navigator.storage.persist) {
+        navigator.storage.persist().then(persistent => {
+          if (persistent) {
+            console.log("Storage will not be cleared except by explicit user action");
+          } else {
+            console.log("Storage may be cleared under storage pressure");
+          }
+        });
+      }
+    }
+  }, []);
 
   const markAsDirty = (isDirty: boolean) => {
     setNeedsSync(isDirty);
@@ -197,6 +213,7 @@ export default function Home() {
 
   const handleDirectSync = async () => {
     setSyncLoading(true);
+    setSyncProgress(10);
     setSyncMessage('Preparando dados para sincronização...');
     try {
       // 1. Obter configuração do MySQL
@@ -231,6 +248,7 @@ export default function Home() {
       }
 
       // 2. Coletar dados locais
+      setSyncProgress(30);
       setSyncMessage('Coletando dados locais...');
       const localProducts = await dbService.getProducts();
       const localInventories = await dbService.getInventoriesRaw();
@@ -241,6 +259,7 @@ export default function Home() {
       }
 
       // 3. Enviar para API de Sincronização
+      setSyncProgress(50);
       setSyncMessage('Sincronizando com o servidor...');
       const res = await fetch('/api/sync', {
         method: 'POST',
@@ -248,8 +267,9 @@ export default function Home() {
         body: JSON.stringify({
           config,
           action: 'sync',
+          syncMode: 'inventories_only', // Mode for faster direct sync
           data: {
-            localProducts,
+            localProducts: [], // Skip local products in this mode
             localInventories,
             localItems: allItems
           }
@@ -258,15 +278,22 @@ export default function Home() {
 
       const result = await res.json();
       if (result.success) {
+        setSyncProgress(80);
         setSyncMessage('Atualizando banco de dados local...');
-        await dbService.clearAll();
-        for (const p of result.data.products) await dbService.saveProduct(p);
+        
+        // Se for apenas inventário, NÃO limpa tudo (clearAll limpa produtos também)
+        // Precisamos limpar apenas Inventários e Itens
+        const db = await dbService.getDB();
+        await db.clear('app_inventarios');
+        await db.clear('app_inventarios_produtos');
+        
         for (const i of result.data.inventories) await dbService.saveInventory(i);
         for (const it of result.data.items) await dbService.saveInventoryItem(it);
         
+        setSyncProgress(100);
         await loadData();
         markAsDirty(false);
-        addToast('Sincronização OK', 'success', result.message || 'Sincronização realizada com sucesso!');
+        addToast('Sincronização OK', 'success', result.message || 'Sincronização de inventários realizada com sucesso!');
       } else {
         addToast('Erro ao sincronizar', 'error', result.error);
       }
@@ -412,6 +439,17 @@ export default function Home() {
               <RefreshCcw className="w-10 h-10 text-blue-400 animate-spin" />
             </div>
             <h3 className="font-black text-white uppercase tracking-wider text-sm mb-2">Sincronizando Dados</h3>
+            
+            {/* Progress Bar Container */}
+            <div className="w-full max-w-[200px] bg-slate-800 h-1.5 rounded-full mb-4 overflow-hidden border border-slate-700">
+              <motion.div 
+                className="h-full bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]"
+                initial={{ width: 0 }}
+                animate={{ width: `${syncProgress}%` }}
+                transition={{ duration: 0.3 }}
+              />
+            </div>
+
             <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest max-w-xs animate-pulse leading-relaxed">
               {syncMessage}
             </p>
@@ -1607,6 +1645,7 @@ const SincronizarScreen = ({ onBack, onSyncSuccess, addToast }: SincronizarScree
   }, []);
 
   const [status, setStatus] = useState<{ type: 'idle' | 'loading' | 'success' | 'error', message?: string }>({ type: 'idle' });
+  const [progress, setProgress] = useState(0);
 
   const handleSaveConfig = () => {
     localStorage.setItem('mysql_config', JSON.stringify(config));
@@ -1615,9 +1654,11 @@ const SincronizarScreen = ({ onBack, onSyncSuccess, addToast }: SincronizarScree
 
   const runAction = async (action: 'create_base' | 'sync') => {
     setStatus({ type: 'loading', message: action === 'create_base' ? 'Verificando e corrigindo estruturas...' : 'Sincronizando dados...' });
+    setProgress(5);
     try {
       // Local structure check for action create_base
       if (action === 'create_base') {
+        setProgress(15);
         const localInventories = await dbService.getInventoriesRaw();
         for (const inv of localInventories) {
           if (inv.ativo === undefined) {
@@ -1636,7 +1677,8 @@ const SincronizarScreen = ({ onBack, onSyncSuccess, addToast }: SincronizarScree
           }
         }
       }
-
+      
+      setProgress(40);
       const localProducts = await dbService.getProducts();
       const localInventories = await dbService.getInventoriesRaw();
       const allItems: InventoryItem[] = [];
@@ -1645,6 +1687,7 @@ const SincronizarScreen = ({ onBack, onSyncSuccess, addToast }: SincronizarScree
         allItems.push(...items);
       }
 
+      setProgress(50);
       const res = await fetch('/api/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1661,13 +1704,16 @@ const SincronizarScreen = ({ onBack, onSyncSuccess, addToast }: SincronizarScree
 
       const result = await res.json();
       if (result.success) {
+        setProgress(70);
         if (action === 'sync') {
           await dbService.clearAll();
           for(const p of result.data.products) await dbService.saveProduct(p);
+          setProgress(85);
           for(const i of result.data.inventories) await dbService.saveInventory(i);
           for(const it of result.data.items) await dbService.saveInventoryItem(it);
           onSyncSuccess();
         }
+        setProgress(100);
         setStatus({ type: 'success', message: result.message || 'Operação concluída com sucesso!' });
         addToast(action === 'create_base' ? 'Estrutura OK' : 'Sincronização OK', 'success');
       } else {
@@ -1684,6 +1730,22 @@ const SincronizarScreen = ({ onBack, onSyncSuccess, addToast }: SincronizarScree
     <div className="flex flex-col h-full bg-slate-50 overflow-hidden">
       <Header title="Sincronizar" onBack={onBack} />
       <div className="flex-1 overflow-y-auto">
+        {status.type === 'loading' && (
+          <div className="px-6 py-4 bg-white border-b border-slate-100 flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest animate-pulse">Processando...</span>
+              <span className="text-[10px] font-black text-blue-600 tracking-widest">{progress}%</span>
+            </div>
+            <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden border border-slate-50">
+              <motion.div 
+                className="h-full bg-blue-600 shadow-[0_0_8px_rgba(37,99,235,0.4)]"
+                initial={{ width: 0 }}
+                animate={{ width: `${progress}%` }}
+                transition={{ duration: 0.3 }}
+              />
+            </div>
+          </div>
+        )}
         <div className="flex flex-col">
           <div className="bg-white p-6 border-b border-slate-200 shadow-sm">
             <h3 className="font-bold text-slate-800 mb-6 flex items-center gap-2 uppercase tracking-tight text-sm">

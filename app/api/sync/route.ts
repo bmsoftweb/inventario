@@ -120,6 +120,7 @@ export async function POST(req: NextRequest) {
 
     if (action === 'sync') {
       const { localProducts, localInventories, localItems } = data;
+      const syncMode = body.syncMode || 'full';
 
       const formatToMySQL = (isoString: string) => {
         if (!isoString) return null;
@@ -212,72 +213,81 @@ export async function POST(req: NextRequest) {
       });
 
       // --- Sync Products ---
-      const [dbProductsRaw]: any = await connection.execute('SELECT * FROM app_produtos');
-      const dbProducts = dbProductsRaw.map(mapProductRow);
+      let finalProducts: any[] = [];
+      if (syncMode !== 'inventories_only') {
+        const [dbProductsRaw]: any = await connection.execute('SELECT * FROM app_produtos');
+        const dbProducts = dbProductsRaw.map(mapProductRow);
 
-      const dbProductsMap = new Map<string, any>();
-      for (const p of dbProducts) dbProductsMap.set(p.id_app, p);
+        const dbProductsMap = new Map<string, any>();
+        for (const p of dbProducts) dbProductsMap.set(p.id_app, p);
 
-      const localProductsMap = new Map<string, any>();
-      for (const p of localProducts || []) localProductsMap.set(p.id_app, p);
+        const localProductsMap = new Map<string, any>();
+        for (const p of localProducts || []) localProductsMap.set(p.id_app, p);
 
-      const allProductIds = new Set<string>([
-        ...Array.from(localProductsMap.keys()),
-        ...Array.from(dbProductsMap.keys())
-      ]);
+        const allProductIds = new Set<string>([
+          ...Array.from(localProductsMap.keys()),
+          ...Array.from(dbProductsMap.keys())
+        ]);
 
-      const finalProducts: any[] = [];
+        const BATCH_SIZE = 1000;
+        const idsArray = Array.from(allProductIds);
+        
+        for (let i = 0; i < idsArray.length; i += BATCH_SIZE) {
+          const batchIds = idsArray.slice(i, i + BATCH_SIZE);
+          const batchPromises = batchIds.map(async (id) => {
+            const local = localProductsMap.get(id);
+            const mysqlRow = dbProductsMap.get(id);
 
-      for (const id of allProductIds) {
-        const local = localProductsMap.get(id);
-        const mysqlRow = dbProductsMap.get(id);
+            if (local && !mysqlRow) {
+              await connection!.execute(
+                'INSERT INTO app_produtos (id_app, id_bm, id_bm_produtosprincipal, referencia, descricao, marca, ativo, foto, date_update) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                [
+                  local.id_app,
+                  local.id_bm || 0,
+                  local.id_bm_produtosprincipal || 0,
+                  local.referencia || '',
+                  local.descricao || '',
+                  local.marca || '',
+                  local.ativo || 'S',
+                  getBufferFromBase64(local.foto),
+                  formatToMySQL(local.date_update)
+                ]
+              );
+              return local;
+            } else if (local && mysqlRow) {
+              const localTime = getEpochSec(local.date_update);
+              const mysqlTime = getEpochSec(mysqlRow.date_update);
 
-        if (local && !mysqlRow) {
-          // Send to MySQL (Not found in mysql)
-          await connection.execute(
-            'INSERT INTO app_produtos (id_app, id_bm, id_bm_produtosprincipal, referencia, descricao, marca, ativo, foto, date_update) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            [
-              local.id_app,
-              local.id_bm || 0,
-              local.id_bm_produtosprincipal || 0,
-              local.referencia || '',
-              local.descricao || '',
-              local.marca || '',
-              local.ativo || 'S',
-              getBufferFromBase64(local.foto),
-              formatToMySQL(local.date_update)
-            ]
-          );
-          finalProducts.push(local);
-        } else if (local && mysqlRow) {
-          const localTime = getEpochSec(local.date_update);
-          const mysqlTime = getEpochSec(mysqlRow.date_update);
+              if (localTime > mysqlTime) {
+                await connection!.execute(
+                  'UPDATE app_produtos SET id_bm=?, id_bm_produtosprincipal=?, referencia=?, descricao=?, marca=?, ativo=?, foto=?, date_update=? WHERE id_app=?',
+                  [
+                    local.id_bm || 0,
+                    local.id_bm_produtosprincipal || 0,
+                    local.referencia || '',
+                    local.descricao || '',
+                    local.marca || '',
+                    local.ativo || 'S',
+                    getBufferFromBase64(local.foto),
+                    formatToMySQL(local.date_update),
+                    local.id_app
+                  ]
+                );
+                return local;
+              } else {
+                return mysqlRow;
+              }
+            } else if (!local && mysqlRow) {
+              return mysqlRow;
+            }
+            return null;
+          });
 
-          if (localTime > mysqlTime) {
-            // Local is newer -> Update MySQL
-            await connection.execute(
-              'UPDATE app_produtos SET id_bm=?, id_bm_produtosprincipal=?, referencia=?, descricao=?, marca=?, ativo=?, foto=?, date_update=? WHERE id_app=?',
-              [
-                local.id_bm || 0,
-                local.id_bm_produtosprincipal || 0,
-                local.referencia || '',
-                local.descricao || '',
-                local.marca || '',
-                local.ativo || 'S',
-                getBufferFromBase64(local.foto),
-                formatToMySQL(local.date_update),
-                local.id_app
-              ]
-            );
-            finalProducts.push(local);
-          } else {
-            // MySQL is newer or equal -> Keep MySQL
-            finalProducts.push(mysqlRow);
-          }
-        } else if (!local && mysqlRow) {
-          // Keep MySQL row
-          finalProducts.push(mysqlRow);
+          const results = await Promise.all(batchPromises);
+          finalProducts.push(...results.filter(r => r !== null));
         }
+      } else {
+        finalProducts = localProducts || [];
       }
 
       // --- Sync Inventories ---

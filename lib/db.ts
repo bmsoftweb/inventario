@@ -128,6 +128,9 @@ export const dbService = {
     const db = await initDB();
     return db.getFromIndex('app_produtos', 'by_referencia', ref);
   },
+  async getDB() {
+    return initDB();
+  },
   async clearAll() {
     const db = await initDB();
     const tx = db.transaction(['app_produtos', 'app_inventarios', 'app_inventarios_produtos'], 'readwrite');
