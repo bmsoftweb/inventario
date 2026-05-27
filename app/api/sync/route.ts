@@ -71,12 +71,16 @@ export async function POST(req: NextRequest) {
           data date DEFAULT (CURDATE()),
           datahora_abertura datetime DEFAULT (NOW()),
           datahora_fechamento datetime DEFAULT NULL,
+          obs varchar(255) DEFAULT '',
+          status char(1) DEFAULT 'A',
           ativo varchar(1) DEFAULT 'S',
           PRIMARY KEY (id_app)
         )
       `);
       await ensureColumn('app_inventarios', 'datahora_abertura', "datetime DEFAULT (NOW())");
       await ensureColumn('app_inventarios', 'datahora_fechamento', "datetime DEFAULT NULL");
+      await ensureColumn('app_inventarios', 'obs', "varchar(255) DEFAULT ''");
+      await ensureColumn('app_inventarios', 'status', "char(1) DEFAULT 'A'");
       await ensureColumn('app_inventarios', 'ativo', "varchar(1) DEFAULT 'S'");
 
       await connection.execute(`
@@ -192,6 +196,8 @@ export async function POST(req: NextRequest) {
         date_update: row.date_update instanceof Date ? row.date_update.toISOString() : (row.date_update || new Date().toISOString()),
         datahora_abertura: row.datahora_abertura instanceof Date ? row.datahora_abertura.toISOString() : (row.datahora_abertura || null),
         datahora_fechamento: row.datahora_fechamento instanceof Date ? row.datahora_fechamento.toISOString() : (row.datahora_fechamento || null),
+        obs: row.obs || '',
+        status: row.status || 'A',
         ativo: row.ativo || 'S'
       });
 
@@ -298,13 +304,15 @@ export async function POST(req: NextRequest) {
         if (local && !mysqlRow) {
           // Send to MySQL (Not found)
           await connection.execute(
-            'INSERT INTO app_inventarios (id_app, data, date_update, datahora_abertura, datahora_fechamento, ativo) VALUES (?, ?, ?, ?, ?, ?)',
+            'INSERT INTO app_inventarios (id_app, data, date_update, datahora_abertura, datahora_fechamento, obs, status, ativo) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
             [
               local.id_app,
               formatDateOnly(local.data),
               formatToMySQL(local.date_update),
               formatToMySQL(local.datahora_abertura),
               formatToMySQL(local.datahora_fechamento),
+              local.obs || '',
+              local.status || 'A',
               local.ativo || 'S'
             ]
           );
@@ -312,16 +320,17 @@ export async function POST(req: NextRequest) {
         } else if (local && mysqlRow) {
           const localTime = getEpochSec(local.date_update);
           const mysqlTime = getEpochSec(mysqlRow.date_update);
-
           if (localTime > mysqlTime) {
             // Local is newer -> Update MySQL
             await connection.execute(
-              'UPDATE app_inventarios SET data=?, date_update=?, datahora_abertura=?, datahora_fechamento=?, ativo=? WHERE id_app=?',
+              'UPDATE app_inventarios SET data=?, date_update=?, datahora_abertura=?, datahora_fechamento=?, obs=?, status=?, ativo=? WHERE id_app=?',
               [
                 formatDateOnly(local.data),
                 formatToMySQL(local.date_update),
                 formatToMySQL(local.datahora_abertura),
                 formatToMySQL(local.datahora_fechamento),
+                local.obs || '',
+                local.status || 'A',
                 local.ativo || 'S',
                 local.id_app
               ]

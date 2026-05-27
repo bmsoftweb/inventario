@@ -43,6 +43,8 @@ export interface Inventory {
   data: string;
   datahora_abertura?: string | null;
   datahora_fechamento?: string | null;
+  obs?: string;
+  status?: string;
   ativo?: string;
 }
 
@@ -86,7 +88,8 @@ export const dbService = {
   async getInventories() {
     const db = await initDB();
     const all = await db.getAll('app_inventarios');
-    return all.filter((i: any) => i.ativo !== 'N');
+    // Filtra por ativo='S' e status='A' (Aberto) conforme solicitado para ocultar os fechados
+    return all.filter((i: any) => i.ativo !== 'N' && i.status !== 'F');
   },
   async getInventoriesRaw() {
     const db = await initDB();
@@ -95,6 +98,7 @@ export const dbService = {
   async saveInventory(inventory: Inventory) {
     const db = await initDB();
     if (!inventory.ativo) inventory.ativo = 'S';
+    if (!inventory.status) inventory.status = 'A';
     return db.put('app_inventarios', inventory);
   },
   async getInventoryItems(inventoryId: string) {

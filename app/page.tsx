@@ -135,6 +135,21 @@ export default function Home() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [confirmModal, setConfirmModal] = useState<ConfirmOptions | null>(null);
 
+  // Sync state tracking unsaved local changes
+  const [needsSync, setNeedsSync] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('needs_sync') === 'true';
+    }
+    return false;
+  });
+
+  const markAsDirty = (isDirty: boolean) => {
+    setNeedsSync(isDirty);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('needs_sync', isDirty ? 'true' : 'false');
+    }
+  };
+
   const addToast = (message: string, type: 'success' | 'error', detail?: string) => {
     const id = Math.random().toString(36).substr(2, 9);
     setToasts(prev => [...prev, { id, message, detail, type }]);
@@ -250,6 +265,7 @@ export default function Home() {
         for (const it of result.data.items) await dbService.saveInventoryItem(it);
         
         await loadData();
+        markAsDirty(false);
         addToast('Sincronização OK', 'success', result.message || 'Sincronização realizada com sucesso!');
       } else {
         addToast('Erro ao sincronizar', 'error', result.error);
@@ -296,6 +312,7 @@ export default function Home() {
                 setCurrentScreen('digitar');
               }}
               onSync={handleDirectSync}
+              markAsDirty={markAsDirty}
             />
           )}
           {currentScreen === 'digitar' && selectedInventory && (
@@ -305,6 +322,7 @@ export default function Home() {
               onBack={() => setCurrentScreen('inventarios')} 
               addToast={addToast}
               showConfirm={showConfirm}
+              markAsDirty={markAsDirty}
             />
           )}
           {currentScreen === 'sincronizar' && <SincronizarScreen onBack={() => setCurrentScreen('inventarios')} onSyncSuccess={loadData} addToast={addToast} />}
@@ -397,6 +415,23 @@ export default function Home() {
             <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest max-w-xs animate-pulse leading-relaxed">
               {syncMessage}
             </p>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Global Pending Sync Indicator (Red Icon) */}
+      <AnimatePresence>
+        {needsSync && !syncLoading && (
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.5, x: 20 }}
+            animate={{ opacity: 1, scale: 1, x: 0 }}
+            exit={{ opacity: 0, scale: 0.5, x: 20 }}
+            className="fixed top-4 right-4 z-[30000] pointer-events-none"
+          >
+            <div className="bg-red-500 text-white p-2 rounded-xl shadow-lg border-2 border-white flex items-center gap-2 animate-bounce">
+              <RefreshCcw className="w-3.5 h-3.5" />
+              <span className="text-[9px] font-black uppercase tracking-tighter">Sincronização Pendente</span>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
@@ -532,11 +567,13 @@ interface InventoriesScreenProps {
     icon?: React.ReactNode
   ) => void;
   onSync: () => void;
+  markAsDirty: (isDirty: boolean) => void;
 }
 
-const InventoriesScreen = ({ inventories, loadData, onBack, onSelectInventory, addToast, showConfirm, onSync }: InventoriesScreenProps) => {
+const InventoriesScreen = ({ inventories, loadData, onBack, onSelectInventory, addToast, showConfirm, onSync, markAsDirty }: InventoriesScreenProps) => {
   const [isCreating, setIsCreating] = useState(false);
   const [newDate, setNewDate] = useState(new Date().toISOString().split('T')[0]);
+  const [newObs, setNewObs] = useState('');
 
   const handleCreate = async () => {
     try {
@@ -545,10 +582,15 @@ const InventoriesScreen = ({ inventories, loadData, onBack, onSelectInventory, a
         id_app: generateAppId(),
         data: newDate,
         date_update: now,
-        datahora_abertura: now
+        datahora_abertura: now,
+        obs: newObs,
+        status: 'A',
+        ativo: 'S'
       };
       await dbService.saveInventory(newInv);
+      markAsDirty(true);
       setIsCreating(false);
+      setNewObs('');
       loadData();
       addToast('Inventário criado com sucesso!', 'success');
     } catch (e: any) {
@@ -557,7 +599,7 @@ const InventoriesScreen = ({ inventories, loadData, onBack, onSelectInventory, a
   };
 
   const handleToggleClose = async (inv: Inventory) => {
-    const isClosed = !!inv.datahora_fechamento;
+    const isClosed = inv.status === 'F';
     const actionWord = isClosed ? 'reabrir' : 'fechar';
     const confirmButtonText = isClosed ? 'Sim, Reabrir' : 'Sim, Fechar';
     const confirmColor = isClosed 
@@ -573,14 +615,16 @@ const InventoriesScreen = ({ inventories, loadData, onBack, onSelectInventory, a
       async () => {
         try {
           const now = new Date().toISOString();
-          const nextClosed = isClosed ? null : now;
+          const nextClosedDate = isClosed ? null : now;
           const updated: Inventory = {
             ...inv,
-            datahora_fechamento: nextClosed,
-            ativo: nextClosed ? 'N' : 'S',
+            datahora_fechamento: nextClosedDate,
+            status: isClosed ? 'A' : 'F',
+            // ativo Mantém como está (S ou N, geralmente S aqui)
             date_update: now
           };
           await dbService.saveInventory(updated);
+          markAsDirty(true);
           addToast(`Inventário ${isClosed ? 'reaberto' : 'fechado'} com sucesso!`, 'success');
           loadData();
         } catch (e: any) {
@@ -622,7 +666,7 @@ const InventoriesScreen = ({ inventories, loadData, onBack, onSelectInventory, a
                     <h3 className="font-bold text-slate-900 text-sm tracking-tight uppercase leading-none">
                       Inventário {formatDate(inv.data)}
                     </h3>
-                    {inv.datahora_fechamento ? (
+                    {inv.status === 'F' ? (
                       <span className="bg-red-50 text-red-600 text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border border-red-100 flex items-center gap-1 shrink-0">
                         <Lock className="w-2.5 h-2.5" /> Fechado
                       </span>
@@ -648,20 +692,25 @@ const InventoriesScreen = ({ inventories, loadData, onBack, onSelectInventory, a
                       Atu: {formatDateTime(inv.date_update)}
                     </div>
                   </div>
+                  {inv.obs && (
+                    <div className="mt-2 p-2 bg-slate-50 border-l-2 border-blue-400 rounded-r">
+                      <p className="text-[11px] text-slate-600 font-medium italic break-words">&quot;{inv.obs}&quot;</p>
+                    </div>
+                  )}
                 </div>
               </div>
               
               <div className="grid grid-cols-2 gap-2">
                 <button 
                   onClick={() => {
-                    if (inv.datahora_fechamento) {
+                    if (inv.status === 'F') {
                       addToast('Este inventário está fechado e não pode mais ser digitado.', 'error');
                       return;
                     }
                     onSelectInventory(inv);
                   }}
                   className={`flex items-center justify-center gap-2 py-3 rounded font-bold transition-all ${
-                    inv.datahora_fechamento 
+                    inv.status === 'F' 
                       ? 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200' 
                       : 'bg-slate-900 text-white active:bg-slate-800'
                   }`}
@@ -672,12 +721,12 @@ const InventoriesScreen = ({ inventories, loadData, onBack, onSelectInventory, a
                 <button 
                   onClick={() => handleToggleClose(inv)}
                   className={`flex items-center justify-center gap-2 py-3 rounded font-bold transition-all border ${
-                    inv.datahora_fechamento
+                    inv.status === 'F'
                       ? 'bg-emerald-50 text-emerald-600 border-emerald-200 active:bg-emerald-100'
                       : 'bg-red-50 text-red-600 border-red-200 active:bg-red-100'
                   }`}
                 >
-                  {inv.datahora_fechamento ? (
+                  {inv.status === 'F' ? (
                     <>
                       <Unlock className="w-4 h-4 text-emerald-500 flex-shrink-0" /> 
                       <span className="text-[11px] uppercase tracking-widest">Reabrir</span>
@@ -725,6 +774,13 @@ const InventoriesScreen = ({ inventories, loadData, onBack, onSelectInventory, a
                 value={newDate}
                 onChange={(e) => setNewDate(e.target.value)}
               />
+              <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2">Observação</label>
+              <textarea 
+                className="w-full px-4 py-3 bg-slate-50 border border-slate-200 mb-6 text-sm font-bold focus:outline-none focus:ring-1 focus:ring-blue-500 transition-all text-slate-800 h-24 resize-none"
+                placeholder="Digite uma observação (opcional)..."
+                value={newObs}
+                onChange={(e) => setNewObs(e.target.value)}
+              />
               <div className="flex gap-4">
                 <button onClick={() => setIsCreating(false)} className="flex-1 py-3 font-bold text-slate-400 uppercase tracking-widest text-sm">Cancelar</button>
                 <button onClick={handleCreate} className="flex-1 bg-blue-600 text-white py-3 font-bold uppercase tracking-widest text-sm shadow active:bg-blue-700">Criar Agora</button>
@@ -750,9 +806,10 @@ interface DigitarScreenProps {
     confirmColorClassName?: string,
     icon?: React.ReactNode
   ) => void;
+  markAsDirty: (isDirty: boolean) => void;
 }
 
-const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConfirm }: DigitarScreenProps) => {
+const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConfirm, markAsDirty }: DigitarScreenProps) => {
   const [scanActive, setScanActive] = useState(false);
   const [barcode, setBarcode] = useState('');
   const [foundedProduct, setFoundedProduct] = useState<Product | null>(null);
@@ -832,6 +889,7 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
       };
 
       await dbService.saveInventoryItem(newItem);
+      markAsDirty(true);
       const updated = await dbService.getInventoryItems(selectedInventory.id_app);
       setItems(updated);
 
@@ -883,6 +941,7 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
             date_update: new Date().toISOString()
           };
           await dbService.saveInventoryItem(newItem);
+          markAsDirty(true);
           const updated = await dbService.getInventoryItems(selectedInventory.id_app);
           setItems(updated);
           addToast(`Item "${found.descricao}" adicionado (Qtd: 1)`, 'success');
@@ -897,7 +956,7 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
       playErrorBeep();
       addToast(`Produto não localizado para o código: "${code}"`, 'error');
     }
-  }, [products, digitarQtdMode, selectedInventory, addToast]);
+  }, [products, digitarQtdMode, selectedInventory, addToast, markAsDirty]);
 
   useEffect(() => {
     if (selectedInventory) {
@@ -1044,6 +1103,7 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
       };
       
       await dbService.saveInventoryItem(newItem);
+      markAsDirty(true);
       const updated = await dbService.getInventoryItems(selectedInventory.id_app);
       setItems(updated);
       
@@ -1061,6 +1121,7 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
     showConfirm('Excluir Lançamento', 'Tem certeza que deseja excluir este lançamento?', async () => {
       try {
         await dbService.deleteInventoryItem(idApp);
+        markAsDirty(true);
         const updated = await dbService.getInventoryItems(selectedInventory.id_app);
         setItems(updated);
         addToast('Lançamento excluído!', 'success');
