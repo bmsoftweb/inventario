@@ -31,6 +31,23 @@ import { dbService, generateAppId, Product, Inventory, InventoryItem } from '@/l
 import { Html5QrcodeScanner, Html5Qrcode } from 'html5-qrcode';
 
 // --- Helpers ---
+const getSaoPauloISOString = (date = new Date()) => {
+  try {
+    const localStr = date.toLocaleString('sv-SE', { timeZone: 'America/Sao_Paulo' });
+    return localStr.replace(' ', 'T') + '-03:00';
+  } catch (e) {
+    return date.toISOString();
+  }
+};
+
+const getSaoPauloDateOnlyString = (date = new Date()) => {
+  try {
+    return date.toLocaleDateString('sv-SE', { timeZone: 'America/Sao_Paulo' });
+  } catch (e) {
+    return date.toISOString().split('T')[0];
+  }
+};
+
 const formatDate = (dateStr: string) => {
   if (!dateStr) return '';
   const parts = dateStr.split('-');
@@ -45,12 +62,16 @@ const formatDateTime = (isoString: string) => {
   try {
     const date = new Date(isoString);
     if (isNaN(date.getTime())) return '';
-    const d = date.getDate().toString().padStart(2, '0');
-    const m = (date.getMonth() + 1).toString().padStart(2, '0');
-    const y = date.getFullYear();
-    const h = date.getHours().toString().padStart(2, '0');
-    const min = date.getMinutes().toString().padStart(2, '0');
-    return `${d}/${m}/${y} ${h}:${min}`;
+    const formatter = new Intl.DateTimeFormat('pt-BR', {
+      timeZone: 'America/Sao_Paulo',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    });
+    return formatter.format(date);
   } catch (e) {
     return '';
   }
@@ -614,12 +635,13 @@ interface InventoriesScreenProps {
 
 const InventoriesScreen = ({ inventories, loadData, onBack, onSelectInventory, addToast, showConfirm, onSync, markAsDirty }: InventoriesScreenProps) => {
   const [isCreating, setIsCreating] = useState(false);
-  const [newDate, setNewDate] = useState(new Date().toISOString().split('T')[0]);
+  const [newDate, setNewDate] = useState(getSaoPauloDateOnlyString());
   const [newObs, setNewObs] = useState('');
+  const [activeFilter, setActiveFilter] = useState<'Todos' | 'A' | 'F' | 'X'>('Todos');
 
   const handleCreate = async () => {
     try {
-      const now = new Date().toISOString();
+      const now = getSaoPauloISOString();
       const newInv: Inventory = {
         id_app: generateAppId(),
         data: newDate,
@@ -641,6 +663,10 @@ const InventoriesScreen = ({ inventories, loadData, onBack, onSelectInventory, a
   };
 
   const handleToggleClose = async (inv: Inventory) => {
+    if (inv.status === 'X') {
+      addToast('Este inventário foi ajustado e não pode mais ser alterado.', 'error');
+      return;
+    }
     const isClosed = inv.status === 'F';
     const actionWord = isClosed ? 'reabrir' : 'fechar';
     const confirmButtonText = isClosed ? 'Sim, Reabrir' : 'Sim, Fechar';
@@ -656,7 +682,7 @@ const InventoriesScreen = ({ inventories, loadData, onBack, onSelectInventory, a
       `Tem certeza que deseja ${actionWord} o inventário de ${formatDate(inv.data)}?`,
       async () => {
         try {
-          const now = new Date().toISOString();
+          const now = getSaoPauloISOString();
           const nextClosedDate = isClosed ? null : now;
           const updated: Inventory = {
             ...inv,
@@ -679,6 +705,11 @@ const InventoriesScreen = ({ inventories, loadData, onBack, onSelectInventory, a
     );
   };
 
+  const filteredInventories = inventories.filter((inv: Inventory) => {
+    if (activeFilter === 'Todos') return true;
+    return (inv.status || 'A') === activeFilter;
+  });
+
   return (
     <div className="flex flex-col h-full bg-slate-50 overflow-hidden">
       <Header title="Inventários" onBack={onBack} />
@@ -698,9 +729,38 @@ const InventoriesScreen = ({ inventories, loadData, onBack, onSelectInventory, a
         </button>
       </div>
 
+      {/* Filtros de Status (Todos, Abertos, Fechados, Ajustados) */}
+      <div className="bg-white border-b border-slate-200 px-4 py-2.5 flex items-center gap-2 overflow-x-auto shrink-0 scrollbar-none">
+        {(['Todos', 'A', 'F', 'X'] as const).map((opt) => {
+          const label = opt === 'Todos' ? 'Todos' : opt === 'A' ? 'Abertos' : opt === 'F' ? 'Fechados' : 'Ajustados';
+          const count = opt === 'Todos' 
+            ? inventories.length 
+            : inventories.filter(i => (i.status || 'A') === opt).length;
+          const isActive = activeFilter === opt;
+          return (
+            <button
+              key={opt}
+              onClick={() => setActiveFilter(opt)}
+              className={`px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-all shrink-0 flex items-center gap-1.5 border ${
+                isActive 
+                  ? 'bg-blue-600 text-white border-blue-600 shadow-sm' 
+                  : 'bg-slate-50 text-slate-500 border-slate-200 hover:bg-slate-100'
+              }`}
+            >
+              <span>{label}</span>
+              <span className={`text-[9px] px-1.5 py-0.2 rounded-full font-bold ${
+                isActive ? 'bg-blue-700/50 text-blue-100' : 'bg-slate-200 text-slate-600'
+              }`}>
+                {count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
       <div className="flex-1 overflow-y-auto">
         <div className="flex flex-col">
-          {inventories.map((inv: Inventory) => (
+          {filteredInventories.map((inv: Inventory) => (
             <div key={inv.id_app} className="bg-white p-5 border-b border-slate-100 animate-fade-in">
               <div className="flex justify-between items-start mb-4">
                 <div>
@@ -711,6 +771,10 @@ const InventoriesScreen = ({ inventories, loadData, onBack, onSelectInventory, a
                     {inv.status === 'F' ? (
                       <span className="bg-red-50 text-red-600 text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border border-red-100 flex items-center gap-1 shrink-0">
                         <Lock className="w-2.5 h-2.5" /> Fechado
+                      </span>
+                    ) : inv.status === 'X' ? (
+                      <span className="bg-indigo-50 text-indigo-600 text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border border-indigo-100 flex items-center gap-1 shrink-0">
+                        <CheckCircle className="w-2.5 h-2.5 text-indigo-500" /> Ajustado
                       </span>
                     ) : (
                       <span className="bg-emerald-50 text-emerald-600 text-[9px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded border border-emerald-100 flex items-center gap-1 shrink-0">
@@ -749,10 +813,14 @@ const InventoriesScreen = ({ inventories, loadData, onBack, onSelectInventory, a
                       addToast('Este inventário está fechado e não pode mais ser digitado.', 'error');
                       return;
                     }
+                    if (inv.status === 'X') {
+                      addToast('Este inventário foi ajustado e não pode mais ser digitado.', 'error');
+                      return;
+                    }
                     onSelectInventory(inv);
                   }}
                   className={`flex items-center justify-center gap-2 py-3 rounded font-bold transition-all ${
-                    inv.status === 'F' 
+                    inv.status === 'F' || inv.status === 'X'
                       ? 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200' 
                       : 'bg-slate-900 text-white active:bg-slate-800'
                   }`}
@@ -761,14 +829,27 @@ const InventoriesScreen = ({ inventories, loadData, onBack, onSelectInventory, a
                   <span className="text-[11px] uppercase tracking-widest">Digitar</span>
                 </button>
                 <button 
-                  onClick={() => handleToggleClose(inv)}
+                  onClick={() => {
+                    if (inv.status === 'X') {
+                      addToast('Este inventário foi ajustado e não pode mais ser alterado.', 'error');
+                      return;
+                    }
+                    handleToggleClose(inv);
+                  }}
                   className={`flex items-center justify-center gap-2 py-3 rounded font-bold transition-all border ${
-                    inv.status === 'F'
-                      ? 'bg-emerald-50 text-emerald-600 border-emerald-200 active:bg-emerald-100'
-                      : 'bg-red-50 text-red-600 border-red-200 active:bg-red-100'
+                    inv.status === 'X'
+                      ? 'bg-slate-100 text-slate-400 cursor-not-allowed border-slate-200'
+                      : inv.status === 'F'
+                        ? 'bg-emerald-50 text-emerald-600 border-emerald-200 active:bg-emerald-100'
+                        : 'bg-red-50 text-red-600 border-red-200 active:bg-red-100'
                   }`}
                 >
-                  {inv.status === 'F' ? (
+                  {inv.status === 'X' ? (
+                    <>
+                      <Lock className="w-4 h-4 text-slate-400 flex-shrink-0" /> 
+                      <span className="text-[11px] uppercase tracking-widest">Ajustado</span>
+                    </>
+                  ) : inv.status === 'F' ? (
                     <>
                       <Unlock className="w-4 h-4 text-emerald-500 flex-shrink-0" /> 
                       <span className="text-[11px] uppercase tracking-widest">Reabrir</span>
@@ -783,7 +864,7 @@ const InventoriesScreen = ({ inventories, loadData, onBack, onSelectInventory, a
               </div>
             </div>
           ))}
-          {inventories.length === 0 && (
+          {filteredInventories.length === 0 && (
             <div className="py-20 text-center flex flex-col items-center">
               <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center text-slate-300 mb-4">
                 <ClipboardList className="w-8 h-8" />
@@ -927,7 +1008,7 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
         produto_id_app: capturaSelectedProduct.id_app,
         produto_referencia: capturaSelectedProduct.referencia,
         qtdade: numericQtd,
-        date_update: new Date().toISOString()
+        date_update: getSaoPauloISOString()
       };
 
       await dbService.saveInventoryItem(newItem);
@@ -980,7 +1061,7 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
             produto_id_app: found.id_app,
             produto_referencia: found.referencia,
             qtdade: 1,
-            date_update: new Date().toISOString()
+            date_update: getSaoPauloISOString()
           };
           await dbService.saveInventoryItem(newItem);
           markAsDirty(true);
@@ -1141,7 +1222,7 @@ const DigitarScreen = ({ products, selectedInventory, onBack, addToast, showConf
         produto_id_app: foundedProduct.id_app,
         produto_referencia: foundedProduct.referencia,
         qtdade: numericQtd,
-        date_update: new Date().toISOString()
+        date_update: getSaoPauloISOString()
       };
       
       await dbService.saveInventoryItem(newItem);

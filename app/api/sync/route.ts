@@ -42,7 +42,8 @@ export async function POST(req: NextRequest) {
         connectTimeout: 20000, // 20 seconds timeout
         ssl: {
           rejectUnauthorized: false // Often needed for cloud MySQL
-        }
+        },
+        dateStrings: true // Return dates as strings to avoid automatic timezone offset offsets
       });
     } catch (connErr: any) {
       console.error('MySQL Conn Error:', connErr);
@@ -95,6 +96,7 @@ export async function POST(req: NextRequest) {
         )
       `);
       await ensureColumn('app_inventarios_produtos', 'ativo', "varchar(1) DEFAULT 'S'");
+      await ensureColumn('app_inventarios_produtos', 'date_update', "datetime DEFAULT (NOW()) ON UPDATE CURRENT_TIMESTAMP");
 
       await connection.execute(`
         CREATE TABLE IF NOT EXISTS app_produtos (
@@ -120,13 +122,60 @@ export async function POST(req: NextRequest) {
       const { localProducts, localInventories, localItems } = data;
       const syncMode = body.syncMode || 'full';
 
+      const getSaoPauloISOString = (val: any): string => {
+        try {
+          const date = val ? new Date(val) : new Date();
+          if (isNaN(date.getTime())) {
+            return new Date().toLocaleString('sv-SE', { timeZone: 'America/Sao_Paulo' }).replace(' ', 'T') + '-03:00';
+          }
+          const localStr = date.toLocaleString('sv-SE', { timeZone: 'America/Sao_Paulo' });
+          return localStr.replace(' ', 'T') + '-03:00';
+        } catch (e) {
+          return new Date().toLocaleString('sv-SE', { timeZone: 'America/Sao_Paulo' }).replace(' ', 'T') + '-03:00';
+        }
+      };
+
+      const getSaoPauloISOStringFromMySQL = (val: any): string => {
+        if (!val) {
+          return getSaoPauloISOString(null);
+        }
+        if (typeof val === 'string') {
+          if (val.includes('T') && (val.includes('Z') || val.includes('-') || val.includes('+'))) {
+            return getSaoPauloISOString(new Date(val));
+          }
+          const cleanStr = val.replace(' ', 'T');
+          if (cleanStr.length === 10) {
+            return `${cleanStr}T00:00:00-03:00`;
+          }
+          if (cleanStr.length >= 19) {
+            return `${cleanStr.substring(0, 19)}-03:00`;
+          }
+        }
+        if (val instanceof Date) {
+          return getSaoPauloISOString(val);
+        }
+        return getSaoPauloISOString(null);
+      };
+
+      const getSaoPauloDateOnlyFromMySQL = (val: any): string => {
+        if (!val) {
+          return getSaoPauloISOString(null).split('T')[0];
+        }
+        if (typeof val === 'string') {
+          return val.split(' ')[0].split('T')[0];
+        }
+        if (val instanceof Date) {
+          return val.toLocaleDateString('sv-SE', { timeZone: 'America/Sao_Paulo' });
+        }
+        return getSaoPauloISOString(null).split('T')[0];
+      };
+
       const formatToMySQL = (isoString: string) => {
         if (!isoString) return null;
         try {
           const date = new Date(isoString);
           if (isNaN(date.getTime())) return null;
-          // Format: YYYY-MM-DD HH:MM:SS
-          return date.toISOString().slice(0, 19).replace('T', ' ');
+          return date.toLocaleString('sv-SE', { timeZone: 'America/Sao_Paulo' });
         } catch (e) {
           return null;
         }
@@ -142,7 +191,7 @@ export async function POST(req: NextRequest) {
         try {
           const date = new Date(val);
           if (isNaN(date.getTime())) return null;
-          return date.toISOString().split('T')[0];
+          return date.toLocaleDateString('sv-SE', { timeZone: 'America/Sao_Paulo' });
         } catch (e) {
           return null;
         }
@@ -168,16 +217,16 @@ export async function POST(req: NextRequest) {
           descricao: row.descricao || '',
           marca: row.marca || '',
           ativo: row.ativo || 'S',
-          date_update: row.date_update instanceof Date ? row.date_update.toISOString() : (row.date_update || new Date().toISOString())
+          date_update: getSaoPauloISOStringFromMySQL(row.date_update)
         };
       };
 
       const mapInventoryRow = (row: any) => ({
         id_app: row.id_app,
-        data: row.data instanceof Date ? row.data.toISOString().split('T')[0] : (row.data || new Date().toISOString().split('T')[0]),
-        date_update: row.date_update instanceof Date ? row.date_update.toISOString() : (row.date_update || new Date().toISOString()),
-        datahora_abertura: row.datahora_abertura instanceof Date ? row.datahora_abertura.toISOString() : (row.datahora_abertura || null),
-        datahora_fechamento: row.datahora_fechamento instanceof Date ? row.datahora_fechamento.toISOString() : (row.datahora_fechamento || null),
+        data: getSaoPauloDateOnlyFromMySQL(row.data),
+        date_update: getSaoPauloISOStringFromMySQL(row.date_update),
+        datahora_abertura: row.datahora_abertura ? getSaoPauloISOStringFromMySQL(row.datahora_abertura) : null,
+        datahora_fechamento: row.datahora_fechamento ? getSaoPauloISOStringFromMySQL(row.datahora_fechamento) : null,
         obs: row.obs || '',
         status: row.status || 'A',
         ativo: row.ativo || 'S'
@@ -189,7 +238,7 @@ export async function POST(req: NextRequest) {
         produto_id_app: row.produto_id_app || '',
         produto_referencia: row.produto_referencia || '',
         qtdade: Number(row.qtdade || 0),
-        date_update: row.date_update instanceof Date ? row.date_update.toISOString() : (row.date_update || new Date().toISOString()),
+        date_update: getSaoPauloISOStringFromMySQL(row.date_update),
         ativo: row.ativo || 'S'
       });
 

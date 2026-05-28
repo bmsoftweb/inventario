@@ -87,8 +87,8 @@ export const dbService = {
   async getInventories() {
     const db = await initDB();
     const all = await db.getAll('app_inventarios');
-    // Filtra por ativo='S' e status='A' (Aberto) conforme solicitado para ocultar os fechados
-    return all.filter((i: any) => i.ativo !== 'N' && i.status !== 'F');
+    // Filtra apenas os deletados, permitindo filtros de status client-side
+    return all.filter((i: any) => i.ativo !== 'N');
   },
   async getInventoriesRaw() {
     const db = await initDB();
