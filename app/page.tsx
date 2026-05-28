@@ -714,16 +714,16 @@ const InventoriesScreen = ({ inventories, loadData, onBack, onSelectInventory, a
     <div className="flex flex-col h-full bg-slate-50 overflow-hidden">
       <Header title="Inventários" onBack={onBack} />
       
-      <div className="bg-white border-b border-slate-200 flex flex-col">
+      <div className="bg-white border-b border-slate-200 flex flex-col p-[4px] gap-[4px]">
         <button 
           onClick={() => setIsCreating(true)}
-          className="w-full bg-blue-600 text-white py-4 font-bold uppercase tracking-widest text-sm flex items-center justify-center gap-2 active:bg-blue-700 transition-all border-b border-slate-100"
+          className="bg-blue-600 text-white py-4 font-bold uppercase tracking-widest text-sm flex items-center justify-center gap-2 active:bg-blue-700 transition-all rounded-[6px]"
         >
           <Plus className="w-5 h-5" /> Novo Inventário
         </button>
         <button 
           onClick={onSync}
-          className="w-full bg-slate-900 text-white py-4 font-bold uppercase tracking-widest text-sm flex items-center justify-center gap-2 active:bg-slate-800 transition-all"
+          className="bg-slate-900 text-white py-4 font-bold uppercase tracking-widest text-sm flex items-center justify-center gap-2 active:bg-slate-800 transition-all rounded-[6px]"
         >
           <RefreshCcw className="w-5 h-5 text-blue-400" /> Sincronizar
         </button>
@@ -1970,7 +1970,7 @@ const MenuButton = ({ icon, label, onClick, color }: { icon: React.ReactNode, la
     className={`w-full flex items-center justify-between h-[80px] px-6 bg-white border-b border-slate-100 hover:bg-slate-50 transition-colors group`}
   >
     <div className="flex items-center gap-5">
-      <div className={`w-12 h-12 rounded bg-slate-50 border border-slate-100 flex items-center justify-center shadow-sm group-hover:scale-105 transition-transform ${color}`}>
+      <div className={`w-8 h-8 flex items-center justify-center group-hover:scale-105 transition-transform ${color}`}>
         {icon}
       </div>
       <span className="text-sm font-black text-slate-800 tracking-tight uppercase">{label}</span>
@@ -1981,7 +1981,7 @@ const MenuButton = ({ icon, label, onClick, color }: { icon: React.ReactNode, la
 
 const Header = ({ title, onBack }: { title: string, onBack: () => void }) => (
   <div className="h-[70px] bg-white px-6 border-b border-slate-100 flex items-center gap-5 sticky top-0 z-10">
-    <button onClick={onBack} className="w-10 h-10 flex items-center justify-center hover:bg-slate-100 rounded transition-colors border border-slate-200">
+    <button onClick={onBack} className="w-10 h-10 flex items-center justify-center hover:bg-slate-100 rounded transition-colors">
       <ArrowLeft className="w-5 h-5 text-slate-800" />
     </button>
     <h2 className="text-sm font-black text-slate-900 uppercase tracking-tight truncate overflow-ellipsis">{title}</h2>
