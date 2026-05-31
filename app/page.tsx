@@ -1967,13 +1967,13 @@ const SincronizarScreen = ({ onBack, onSyncSuccess, addToast, needsSync, markAsD
 const MenuButton = ({ icon, label, onClick, color }: { icon: React.ReactNode, label: string, onClick: () => void, color: string }) => (
   <button 
     onClick={onClick}
-    className={`w-full flex items-center justify-between h-[80px] px-6 bg-white border-b border-slate-100 hover:bg-slate-50 transition-colors group`}
+    className={`w-full flex items-center justify-between h-[60px] px-6 bg-white border-b border-slate-100 hover:bg-slate-50 transition-colors group`}
   >
     <div className="flex items-center gap-5">
       <div className={`w-8 h-8 flex items-center justify-center group-hover:scale-105 transition-transform ${color}`}>
         {icon}
       </div>
-      <span className="text-sm font-black text-slate-800 tracking-tight uppercase">{label}</span>
+      <span className="text-base font-normal text-slate-800 tracking-normal">{label}</span>
     </div>
     <ChevronRight className="w-4 h-4 text-slate-300" />
   </button>
